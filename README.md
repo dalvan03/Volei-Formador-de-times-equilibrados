@@ -43,16 +43,21 @@ Além do sorteio inteligente, a aplicação conta com registro de placares em te
 - **Tratamento de Ímpares**: Caso haja um número ímpar de participantes, o sistema realiza o balanceamento sem penalizar a média do time com jogadores excedentes.
 
 ### 📊 Gestão do Dia de Jogo & Placares
+- **Montagem e Sorteio Local (Draft Assíncrono)**: Seleção de presença, adição de convidados, sorteio e trocas manuais de jogadores ocorrem de forma 100% fluida e local no navegador, sem requisições excessivas e sem risco de perda de estado.
+- **Persistência por Eventos & Exclusão Segura**: O registro definitivo no banco de dados relacional PostgreSQL é acionado apenas no clique de **Começar Rodada** (bloqueio de alterações e liberação do placar) e **Finalizar Rodada** (cálculo de estatísticas). O cancelamento ou exclusão de rodadas aciona limpeza completa e sincronizada tanto no estado local quanto no PostgreSQL (`DELETE /api/matches/:id` com cascade nas tabelas de votos e feedbacks).
 - Marcador de placar por sets (ex: 25x23) e vitórias acumuladas.
-- Registro da presença de atletas da rodada com suporte a convidados.
-- Histórico completo das rodadas com estatísticas individuais de vitórias, derrotas e taxa de aproveitamento.
+- Histórico completo das rodadas com estatísticas individuais de vitórias, empates, derrotas e taxa de aproveitamento calculadas dinamicamente.
 
-### 🌟 Ranking & Sistema de Feedback Coletivo
-- **Estrelas Dinâmicas**: Avaliação de 1 a 5 estrelas atribuída aos atletas após os jogos.
+### 🌟 Ranking, Feedback Coletivo & Craque da Partida
+- **Votação do Craque da Partida (MVP)**: Votação popular anônima disponível por 24 horas após o término do jogo, permitindo que cada participante vote no destaque de ambos os times (auto-voto bloqueado).
+- **Banner Televisivo (Broadcast TV)**: Exibição no topo do *Dia de Jogo* com contagem regressiva durante a votação e pódio com as porcentagens do Top 3 após o encerramento das 24h.
+- **Histórico de Craques no Ranking**: Contagem acumulada de títulos de Craque da Partida no perfil de cada atleta e opção de ordenação por Craques.
+- **Estrelas Dinâmicas**: Avaliação de 1 a 5 estrelas atribuída aos colegas de time após os jogos.
 - **Feedback de Equilíbrio**: Jogadores votam ao final da rodada se o confronto esteve realmente parelho.
 
 ### 📸 Geração de Cards para Redes Sociais
-- Geração automática de imagem PNG estilizada em *Dark Mode / Glassmorphism* com escalação oficial dos dois times para envio nos grupos de WhatsApp.
+- **Arte do Craque da Partida**: Geração de imagem em alta definição para publicação nos Stories (Instagram e Facebook) e compartilhamento rápido de legenda e imagem no WhatsApp.
+- **Escalação dos Times**: Geração automática de imagem PNG estilizada em *Dark Mode / Glassmorphism* com escalação oficial dos dois times.
 
 ---
 
@@ -62,39 +67,55 @@ O projeto utiliza uma stack moderna focada em alta performance, responsividade e
 
 - **Frontend**: [React 18](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Tailwind CSS v4](https://tailwindcss.com/), [Lucide React](https://lucide.dev/) (Ícones).
 - **Build Tool**: [Vite](https://vitejs.dev/) & [esbuild](https://esbuild.github.io/).
-- **Backend / API**: Server HTTP lightweight com [Express](https://expressjs.com/) em Node.js (com persistência JSON rápida).
+- **Backend / ORM**: [Express](https://expressjs.com/), [PostgreSQL 16](https://www.postgresql.org/), [Drizzle ORM](https://orm.drizzle.team/).
+- **Visualizador de Banco**: [Drizzle Studio](https://orm.drizzle.team/drizzle-studio/overview) (`npm run db:studio`).
 - **Utilitários**: [html-to-image](https://github.com/bubkoo/html-to-image) para renderização de cards.
-- **Infraestrutura**: Containerização multi-stage via **Docker** e **Docker Compose**, integrada com **Nginx Proxy Manager**.
+- **Infraestrutura**: Containerização multi-stage via **Docker** (App + PostgreSQL) e **Docker Compose**, integrada com **Nginx Proxy Manager**.
 
 ---
 
 ## 🏗️ Arquitetura do Projeto
 
 ```text
-├── data/                  # Persistência de dados (db.json)
-├── dist/                  # Build compilado de produção (Frontend SPA + Backend CJS)
+├── drizzle.config.ts      # Configuração do Drizzle ORM e Drizzle Studio
+├── pgdata/                # Volume de dados do PostgreSQL no Docker
 ├── scripts/               # Scripts automatizados de gestão de banco de dados
 │   ├── baixar-db.sh       # Pull de segurança do banco de dados em Produção
 │   └── subir-db.sh        # Push e deploy do banco de dados atualizado
 ├── src/
 │   ├── components/        # Componentes React (GameDayTab, RankingTab, ShareTeamsModal...)
+│   ├── db/                # PostgreSQL Schema, Conexão e Serviços Drizzle ORM
+│   │   ├── index.ts       # Client de conexão com o Postgres
+│   │   ├── schema.ts      # Definição relacional das tabelas com Foreign Keys
+│   │   └── services.ts    # Migração automática e Recálculo dinâmico
 │   ├── types.ts           # Interfaces TypeScript da aplicação
-│   ├── utils/             # Algoritmo de sorteio de times e persistência
+│   ├── utils/             # Algoritmo de sorteio de times e helpers
 │   ├── App.tsx            # Componente raiz da aplicação
 │   └── main.tsx           # Entry point do React
 ├── Dockerfile             # Multi-stage Docker build
-├── docker-compose.yml     # Orquestração do container de produção
+├── docker-compose.yml     # Orquestração (Container da App + PostgreSQL)
 ├── deploy.sh              # Script automatizado de deploy SSH/rsync
-└── server.ts              # Servidor Express de API e assets estáticos
+└── server.ts              # Servidor Express de API com Drizzle ORM
 ```
+
+---
+
+## 🎨 Visualizador do Banco de Dados (Drizzle Studio)
+
+Você pode visualizar e editar todo o banco de dados em uma interface gráfica moderna no navegador:
+
+```bash
+npm run db:studio
+```
+O Drizzle Studio abrirá a interface visual com o diagrama relacional e tabelas interligadas por chaves estrangeiras.
 
 ---
 
 ## 🚀 Execução Local
 
 ### Pré-requisitos
-- Node.js (v18+) ou Bun
-- Docker e Docker Compose (opcional)
+- Node.js (v18+)
+- Docker e Docker Compose (para subir o PostgreSQL)
 
 ### Rodando via Node.js
 ```bash
@@ -108,7 +129,7 @@ Acesse a aplicação em `http://localhost:3000`.
 
 ### Rodando via Docker
 ```bash
-# Compilar e subir o container localmente
+# Compilar e subir os containers (App + PostgreSQL) localmente
 docker compose up -d --build
 ```
 

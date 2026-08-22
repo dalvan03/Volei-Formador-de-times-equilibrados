@@ -12,6 +12,7 @@ export interface Player {
   losses: number;
   draws?: number;
   matchesPlayed: number;
+  mvpCount?: number; // Total times elected Match MVP / Craque da Partida
   avatarBg: string;
   isAdmin?: boolean;
   active?: boolean; // Active in group
@@ -50,6 +51,14 @@ export interface PlayerRatingFeedback {
   createdAt: string;
 }
 
+export interface MvpVoteFeedback {
+  id: string;
+  matchId: string;
+  evaluatorPhone: string;
+  targetPlayerId: string;
+  createdAt: string;
+}
+
 export interface Match {
   id: string;
   date: string; // YYYY-MM-DD
@@ -64,6 +73,7 @@ export interface Match {
   setScores?: SetScore[];
   presentPlayerIds: string[];
   createdAt: string;
+  finalizedAt?: string; // Timestamp ISO when match was finalized (marks start of 24h voting window)
 }
 
 export interface UserSession {

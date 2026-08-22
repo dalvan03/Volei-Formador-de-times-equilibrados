@@ -27,8 +27,10 @@ ENV PORT=3000
 COPY package*.json ./
 RUN npm ci --only=production || npm install --production
 
-# Copy compiled assets from build stage
+# Copy compiled assets and db schema from build stage
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
+COPY --from=builder /app/src/db ./src/db
 
 # Ensure data directory exists for db persistence
 RUN mkdir -p /app/data

@@ -1,10 +1,10 @@
-import React, { useState, useMemo } from 'react';
-import { Star, CheckCircle2, ShieldAlert } from 'lucide-react';
+import React, { useState, useMemo, useRef } from 'react';
+import { Star, CheckCircle2, ShieldAlert, Crown, Trophy, AlertCircle } from 'lucide-react';
 import { Match, Player, UserSession } from '../types';
 import { StarRating } from './StarRating';
 import { PlayerAvatar } from './PlayerAvatar';
 import { UserMatchResultBadge } from './UserMatchResultBadge';
-import { saveBalanceFeedback, savePlayerRatingFeedbacks, getStoredBalanceFeedbacks } from '../utils/storage';
+import { saveBalanceFeedback, savePlayerRatingFeedbacks, saveMvpVote, getStoredBalanceFeedbacks } from '../utils/storage';
 
 interface FeedbackTabProps {
   currentMatch: Match | null;
@@ -29,10 +29,23 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
   // Local state trigger to recalculate pending matches when feedback is submitted
   const [submissionCount, setSubmissionCount] = useState(0);
 
-  // Feedback form state
+  // Form input states
   const [wasBalanced, setWasBalanced] = useState<boolean | null>(null);
   const [strongerTeam, setStrongerTeam] = useState<'teamA' | 'teamB' | null>(null);
   const [ratingsMap, setRatingsMap] = useState<Record<string, number>>({});
+  const [selectedMvpId, setSelectedMvpId] = useState<string | null>(null);
+
+  // Validation error states for each card
+  const [validationErrors, setValidationErrors] = useState<{
+    balance?: boolean;
+    ratings?: boolean;
+    mvp?: boolean;
+  }>({});
+
+  // Refs for scrolling to invalid cards
+  const card1Ref = useRef<HTMLDivElement>(null);
+  const card2Ref = useRef<HTMLDivElement>(null);
+  const card3Ref = useRef<HTMLDivElement>(null);
 
   // Get all finalized matches, sorted by most recent first
   const allFinalizedMatches = useMemo(() => {
@@ -59,6 +72,31 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
 
   // Target match is ALWAYS the first unrated match (most recent)
   const targetMatch = pendingMatchesToRate[0] || null;
+
+  // Determine all players from both teams who played this match
+  const allMatchPlayers = useMemo(() => {
+    if (!targetMatch) return [];
+    const playerIds = [
+      ...(targetMatch.teamA?.playerIds || []),
+      ...(targetMatch.teamB?.playerIds || []),
+    ];
+    const uniqueIds = Array.from(new Set(playerIds));
+    return uniqueIds
+      .map((id) => players.find((p) => p.id === id))
+      .filter(Boolean) as Player[];
+  }, [targetMatch, players]);
+
+  // Check if MVP voting window is still open for target match (< 24 hours) - MUST BE DECLARED BEFORE EARLY RETURNS
+  const isMvpVotingOpen = useMemo(() => {
+    if (!targetMatch) return false;
+    const finalizedTime = targetMatch.finalizedAt
+      ? new Date(targetMatch.finalizedAt).getTime()
+      : targetMatch.createdAt
+      ? new Date(targetMatch.createdAt).getTime()
+      : new Date(targetMatch.date + 'T00:00:00').getTime();
+
+    return Date.now() - finalizedTime < 24 * 60 * 60 * 1000;
+  }, [targetMatch]);
 
   if (!session?.isLoggedIn || !currentUser) {
     return (
@@ -116,46 +154,63 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
   }
 
   // Determine user's team in the target match
-  const isInTeamA = targetMatch.teamA.playerIds.includes(currentUser.id);
-  const isInTeamB = targetMatch.teamB.playerIds.includes(currentUser.id);
+  const isInTeamA = targetMatch.teamA?.playerIds?.includes(currentUser.id) ?? false;
+  const isInTeamB = targetMatch.teamB?.playerIds?.includes(currentUser.id) ?? false;
   const userTeam = isInTeamA ? targetMatch.teamA : isInTeamB ? targetMatch.teamB : null;
 
   // Teammates excluding self
   const teammatesToRate = userTeam
-    ? userTeam.playerIds
+    ? (userTeam.playerIds || [])
         .filter((id) => id !== currentUser.id)
         .map((id) => players.find((p) => p.id === id))
         .filter(Boolean) as Player[]
-    : [];
+  : [];
+
+  const otherEligiblePlayers = allMatchPlayers.filter((p) => p.id !== currentUser.id);
 
   const handleRatingChange = (playerId: string, rating: number) => {
     setRatingsMap((prev) => ({ ...prev, [playerId]: rating }));
+    setValidationErrors((prev) => ({ ...prev, ratings: false }));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (wasBalanced === null) {
-      alert('Por favor, responda se o jogo estava balanceado.');
-      return;
-    }
+    // 1. Check card 1 (Balance)
+    const isCard1Invalid =
+      wasBalanced === null || (wasBalanced === false && !strongerTeam);
 
-    if (wasBalanced === false && !strongerTeam) {
-      alert('Por favor, informe qual time estava mais forte.');
-      return;
-    }
-
-    // Check that all teammates received at least 1 star rating
-    const unratedTeammates = teammatesToRate.filter(
+    // 2. Check card 2 (Teammate ratings)
+    const isCard2Invalid = teammatesToRate.some(
       (p) => !ratingsMap[p.id] || ratingsMap[p.id] < 1
     );
 
-    if (unratedTeammates.length > 0) {
-      alert('Por favor, atribua uma nota (estrelas) para todos os jogadores do seu time.');
+    // 3. Check card 3 (Match MVP vote) - Only required if MVP voting is still open (< 24h)
+    const isCard3Invalid =
+      isMvpVotingOpen && otherEligiblePlayers.length > 0 && !selectedMvpId;
+
+    if (isCard1Invalid || isCard2Invalid || isCard3Invalid) {
+      setValidationErrors({
+        balance: isCard1Invalid,
+        ratings: isCard2Invalid,
+        mvp: isCard3Invalid,
+      });
+
+      // Scroll smoothly to the first invalid card
+      if (isCard1Invalid && card1Ref.current) {
+        card1Ref.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else if (isCard2Invalid && card2Ref.current) {
+        card2Ref.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else if (isCard3Invalid && card3Ref.current) {
+        card3Ref.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
       return;
     }
 
-    // Save balance feedback
+    // Clear any previous error
+    setValidationErrors({});
+
+    // 1. Save balance feedback
     saveBalanceFeedback({
       id: `bf_${Date.now()}`,
       matchId: targetMatch.id,
@@ -165,7 +220,7 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
       createdAt: new Date().toISOString(),
     });
 
-    // Save player ratings
+    // 2. Save player ratings
     const ratingsArray: { targetPlayerId: string; rating: number }[] = teammatesToRate.map((p) => ({
       targetPlayerId: p.id,
       rating: Number(ratingsMap[p.id]),
@@ -173,10 +228,17 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
 
     savePlayerRatingFeedbacks(targetMatch.id, userPhone, ratingsArray);
 
+    // 3. Save MVP vote if selected and voting window is open
+    if (isMvpVotingOpen && selectedMvpId) {
+      saveMvpVote(targetMatch.id, userPhone, selectedMvpId);
+    }
+
     // Reset form state for next round if any
     setWasBalanced(null);
     setStrongerTeam(null);
     setRatingsMap({});
+    setSelectedMvpId(null);
+    setValidationErrors({});
     setSubmissionCount((prev) => prev + 1);
 
     onFeedbackSubmitted();
@@ -224,12 +286,33 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
       ) : (
         <form onSubmit={handleSubmit} className="space-y-5">
           {/* Question 1: Balance */}
-          <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center text-xs font-bold shrink-0">
-                1
-              </span>
-              <h3 className="text-sm font-bold text-slate-900">O jogo estava balanceado?</h3>
+          <div
+            ref={card1Ref}
+            className={`bg-white rounded-3xl p-5 shadow-sm transition-all duration-300 space-y-3.5 border ${
+              validationErrors.balance
+                ? 'border-2 border-rose-500 ring-4 ring-rose-500/20 bg-rose-50/20 animate-shake'
+                : 'border-slate-200/80'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${
+                    validationErrors.balance
+                      ? 'bg-rose-500 text-white'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}
+                >
+                  1
+                </span>
+                <h3 className="text-base font-extrabold text-slate-900">O jogo estava balanceado?</h3>
+              </div>
+
+              {validationErrors.balance && (
+                <span className="text-xs font-extrabold text-rose-600 flex items-center gap-1">
+                  <AlertCircle className="w-4 h-4" /> Campo obrigatório
+                </span>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3 pt-1">
@@ -238,8 +321,9 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
                 onClick={() => {
                   setWasBalanced(true);
                   setStrongerTeam(null);
+                  setValidationErrors((prev) => ({ ...prev, balance: false }));
                 }}
-                className={`py-3 px-4 rounded-2xl font-bold text-sm transition-all border cursor-pointer ${
+                className={`py-3.5 px-4 rounded-2xl font-black text-sm sm:text-base transition-all border cursor-pointer ${
                   wasBalanced === true
                     ? 'bg-emerald-600 text-white border-emerald-600 shadow-md shadow-emerald-600/20'
                     : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
@@ -250,8 +334,11 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
 
               <button
                 type="button"
-                onClick={() => setWasBalanced(false)}
-                className={`py-3 px-4 rounded-2xl font-bold text-sm transition-all border cursor-pointer ${
+                onClick={() => {
+                  setWasBalanced(false);
+                  setValidationErrors((prev) => ({ ...prev, balance: false }));
+                }}
+                className={`py-3.5 px-4 rounded-2xl font-black text-sm sm:text-base transition-all border cursor-pointer ${
                   wasBalanced === false
                     ? 'bg-rose-600 text-white border-rose-600 shadow-md shadow-rose-600/20'
                     : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
@@ -264,12 +351,15 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
             {/* Follow up if NOT balanced */}
             {wasBalanced === false && (
               <div className="mt-3 pt-3 border-t border-slate-100 animate-fade-in space-y-2">
-                <p className="text-xs font-bold text-slate-800">Qual time estava mais forte?</p>
+                <p className="text-xs sm:text-sm font-extrabold text-slate-800">Qual time estava mais forte?</p>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setStrongerTeam('teamA')}
-                    className={`p-2.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                    onClick={() => {
+                      setStrongerTeam('teamA');
+                      setValidationErrors((prev) => ({ ...prev, balance: false }));
+                    }}
+                    className={`p-3 rounded-xl border text-xs sm:text-sm font-black transition-all cursor-pointer ${
                       strongerTeam === 'teamA'
                         ? 'bg-blue-600 text-white border-blue-600'
                         : 'bg-slate-50 text-slate-700 border-slate-200'
@@ -279,8 +369,11 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setStrongerTeam('teamB')}
-                    className={`p-2.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                    onClick={() => {
+                      setStrongerTeam('teamB');
+                      setValidationErrors((prev) => ({ ...prev, balance: false }));
+                    }}
+                    className={`p-3 rounded-xl border text-xs sm:text-sm font-black transition-all cursor-pointer ${
                       strongerTeam === 'teamB'
                         ? 'bg-amber-500 text-white border-amber-500'
                         : 'bg-slate-50 text-slate-700 border-slate-200'
@@ -294,29 +387,61 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
           </div>
 
           {/* Question 2: Rate teammates */}
-          <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-4">
-            <div className="flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center text-xs font-bold shrink-0">
-                2
-              </span>
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">Avalie os jogadores do seu time</h3>
-                <p className="text-xs text-slate-500">
-                  Sua equipe: <strong className="text-emerald-700">{userTeam.name}</strong> (Você não pode se auto-avaliar)
-                </p>
+          <div
+            ref={card2Ref}
+            className={`bg-white rounded-3xl p-5 shadow-sm transition-all duration-300 space-y-4 border ${
+              validationErrors.ratings
+                ? 'border-2 border-rose-500 ring-4 ring-rose-500/20 bg-rose-50/20 animate-shake'
+                : 'border-slate-200/80'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${
+                    validationErrors.ratings
+                      ? 'bg-rose-500 text-white'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}
+                >
+                  2
+                </span>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900">Avalie os jogadores do seu time</h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Sua equipe: <strong className="text-emerald-700">{userTeam.name}</strong> (Você não pode se auto-avaliar)
+                  </p>
+                </div>
               </div>
+
+              {validationErrors.ratings && (
+                <span className="text-xs font-extrabold text-rose-600 flex items-center gap-1 shrink-0">
+                  <AlertCircle className="w-4 h-4" /> Avalie todos
+                </span>
+              )}
             </div>
 
             <div className="divide-y divide-slate-100">
               {teammatesToRate.map((teammate) => {
                 const currentVal = ratingsMap[teammate.id] || 0;
+                const isTeammateMissing = validationErrors.ratings && currentVal < 1;
 
                 return (
-                  <div key={teammate.id} className="py-3.5 flex items-center justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <PlayerAvatar player={teammate} size="sm" />
+                  <div
+                    key={teammate.id}
+                    className={`py-3.5 px-2 rounded-2xl flex items-center justify-between transition-colors ${
+                      isTeammateMissing ? 'bg-rose-50/60 ring-1 ring-rose-400/40' : ''
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <PlayerAvatar player={teammate} size="md" />
                       <div>
-                        <p className="text-xs font-bold text-slate-900">{teammate.name}</p>
+                        <p className="text-sm font-black text-slate-900">{teammate.name}</p>
+                        {isTeammateMissing && (
+                          <span className="text-xs text-rose-600 font-extrabold">
+                            Nota pendente
+                          </span>
+                        )}
                       </div>
                     </div>
 
@@ -332,10 +457,106 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
             </div>
           </div>
 
+          {/* Question 3: Vote for Craque da Partida (Match MVP) - Rendered ONLY if within 24h */}
+          {isMvpVotingOpen && (
+            <div
+              ref={card3Ref}
+              className={`bg-white rounded-3xl p-5 shadow-sm transition-all duration-300 space-y-4 border ${
+                validationErrors.mvp
+                  ? 'border-2 border-rose-500 ring-4 ring-rose-500/20 bg-rose-50/20 animate-shake'
+                  : 'border-slate-200/80'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${
+                      validationErrors.mvp
+                        ? 'bg-rose-500 text-white'
+                        : 'bg-amber-500 text-slate-950'
+                    }`}
+                  >
+                    3
+                  </span>
+                  <div>
+                    <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
+                      <Crown className="w-4.5 h-4.5 text-amber-500" />
+                      Craque da Partida
+                    </h3>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Vote no melhor jogador da rodada (ambos os times). Auto-voto bloqueado.
+                    </p>
+                  </div>
+                </div>
+
+                {validationErrors.mvp && (
+                  <span className="text-xs font-extrabold text-rose-600 flex items-center gap-1 shrink-0">
+                    <AlertCircle className="w-4 h-4" /> Escolha 1 jogador
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5 pt-1">
+                {allMatchPlayers.map((player) => {
+                  const isSelf = player.id === currentUser.id;
+                  const isSelected = selectedMvpId === player.id;
+                  const inTeamA = targetMatch.teamA.playerIds.includes(player.id);
+                  const teamName = inTeamA ? targetMatch.teamA.name : targetMatch.teamB.name;
+                  const teamBadgeColor = inTeamA
+                    ? 'bg-blue-100 text-blue-800 border-blue-200'
+                    : 'bg-amber-100 text-amber-800 border-amber-200';
+
+                  return (
+                    <button
+                      key={player.id}
+                      type="button"
+                      disabled={isSelf}
+                      onClick={() => {
+                        setSelectedMvpId(player.id);
+                        setValidationErrors((prev) => ({ ...prev, mvp: false }));
+                      }}
+                      className={`p-3 rounded-2xl border text-left transition-all flex flex-col justify-between gap-2 relative ${
+                        isSelf
+                          ? 'bg-slate-100 border-slate-200 opacity-40 cursor-not-allowed'
+                          : isSelected
+                          ? 'bg-gradient-to-br from-amber-500/15 via-yellow-500/10 to-transparent border-amber-500 ring-2 ring-amber-400/40 shadow-sm cursor-pointer'
+                          : 'bg-slate-50 border-slate-200 hover:bg-slate-100 cursor-pointer'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <PlayerAvatar player={player} size="sm" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-black text-slate-900 truncate">{player.name}</p>
+                          <span
+                            className={`text-xs font-bold px-2 py-0.5 rounded-md border inline-block truncate max-w-full ${teamBadgeColor}`}
+                          >
+                            {teamName}
+                          </span>
+                        </div>
+                      </div>
+
+                      {isSelf && (
+                        <span className="text-xs text-slate-400 font-semibold italic">
+                          Você (Não permitido)
+                        </span>
+                      )}
+
+                      {isSelected && !isSelf && (
+                        <span className="text-xs font-black text-amber-600 flex items-center gap-1">
+                          <Crown className="w-3.5 h-3.5 fill-amber-500" /> Seu voto
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Submit button */}
           <button
             type="submit"
-            className="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-bold rounded-2xl shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"
+            className="w-full py-4 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-black rounded-2xl shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer text-sm sm:text-base"
           >
             <CheckCircle2 className="w-5 h-5" />
             Enviar Avaliação Anônima

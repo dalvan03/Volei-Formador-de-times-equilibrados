@@ -20,6 +20,7 @@ import { Player, Match, UserSession } from '../types';
 import { generateBalancedTeams } from '../utils/teamGenerator';
 import { PlayerAvatar } from './PlayerAvatar';
 import { ShareTeamsModal } from './ShareTeamsModal';
+import { MvpBannerCard } from './MvpBannerCard';
 
 interface GameDayTabProps {
   players: Player[];
@@ -48,18 +49,28 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
   onAddGuest,
   onDeleteGuest,
 }) => {
-  const [selectedPresentIds, setSelectedPresentIds] = useState<string[]>(
-    currentMatch ? (currentMatch.presentPlayerIds || []) : []
-  );
-
-  // Sync selectedPresentIds if currentMatch presentPlayerIds changes
-  useEffect(() => {
-    if (currentMatch) {
-      setSelectedPresentIds(currentMatch.presentPlayerIds || []);
-    } else {
-      setSelectedPresentIds([]);
+  const [selectedPresentIds, setSelectedPresentIds] = useState<string[]>(() => {
+    if (currentMatch && currentMatch.presentPlayerIds && currentMatch.presentPlayerIds.length > 0) {
+      return currentMatch.presentPlayerIds;
     }
-  }, [currentMatch?.id, currentMatch?.presentPlayerIds?.length]);
+    // Padrão: pré-marcar todos os jogadores ativos locais
+    return players.filter((p) => p.active !== false).map((p) => p.id);
+  });
+
+  const [draftMatch, setDraftMatch] = useState<Match | null>(() => {
+    if (currentMatch) return currentMatch;
+    return null;
+  });
+
+  // Mantém draft sincronizado quando a rodada estiver em andamento (já iniciada)
+  useEffect(() => {
+    if (currentMatch && currentMatch.status === 'em_andamento') {
+      setDraftMatch(currentMatch);
+      if (currentMatch.presentPlayerIds) {
+        setSelectedPresentIds(currentMatch.presentPlayerIds);
+      }
+    }
+  }, [currentMatch]);
 
   const [swapPlayerA, setSwapPlayerA] = useState<string | null>(null);
   const [isSwapping, setIsSwapping] = useState(false);
@@ -76,16 +87,8 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
     setGuestNameInput('');
     setShowAddGuestModal(false);
 
-    // Auto select guest in presence
-    const newSelected = [...selectedPresentIds, newGuest.id];
-    setSelectedPresentIds(newSelected);
-
-    if (currentMatch && currentMatch.status === 'agendada') {
-      onUpdateMatch({
-        ...currentMatch,
-        presentPlayerIds: newSelected,
-      });
-    }
+    // Auto select guest in local presence (sem salvar no DB ainda)
+    setSelectedPresentIds((prev) => [...prev, newGuest.id]);
   };
 
   // Set wins count for finalizing match
@@ -97,32 +100,18 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
   );
 
   const togglePresence = (id: string) => {
-    let newSelected: string[];
-    if (selectedPresentIds.includes(id)) {
-      newSelected = selectedPresentIds.filter((pId) => pId !== id);
-    } else {
-      newSelected = [...selectedPresentIds, id];
-    }
-    setSelectedPresentIds(newSelected);
-
-    if (currentMatch && currentMatch.status === 'agendada') {
-      onUpdateMatch({
-        ...currentMatch,
-        presentPlayerIds: newSelected,
-      });
-    }
+    setSelectedPresentIds((prev) =>
+      prev.includes(id) ? prev.filter((pId) => pId !== id) : [...prev, id]
+    );
   };
 
   const selectAll = () => {
     const allActiveIds = players.filter((p) => p.active !== false).map((p) => p.id);
     setSelectedPresentIds(allActiveIds);
-    if (currentMatch && currentMatch.status === 'agendada') {
-      onUpdateMatch({
-        ...currentMatch,
-        presentPlayerIds: allActiveIds,
-      });
-    }
   };
+
+  // Match ativo (em andamento) ou draft local
+  const activeMatch = currentMatch?.status === 'em_andamento' ? currentMatch : draftMatch;
 
   const handleGenerateTeams = () => {
     const presentPlayers = players.filter((p) => selectedPresentIds.includes(p.id));
@@ -136,24 +125,31 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
       teamBColor: 'bg-amber-600',
     });
 
-    const newMatch: Match = {
-      id: currentMatch ? currentMatch.id : `match_${Date.now()}`,
+    const dateFormatted = new Date().toLocaleDateString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+
+    const newDraft: Match = {
+      id: activeMatch ? activeMatch.id : `match_${Date.now()}`,
       date: new Date().toISOString().split('T')[0],
-      title: currentMatch?.title || 'Rodada de Vôlei',
+      title: activeMatch?.title || `Rodada de Vôlei (${dateFormatted})`,
       status: 'agendada',
       teamA,
       teamB,
       presentPlayerIds: selectedPresentIds,
-      createdAt: currentMatch?.createdAt || new Date().toISOString(),
+      createdAt: activeMatch?.createdAt || new Date().toISOString(),
     };
 
-    onUpdateMatch(newMatch);
+    // Atualiza apenas o estado local (zero chamadas de banco de dados)
+    setDraftMatch(newDraft);
     setSwapPlayerA(null);
     setIsSwapping(false);
   };
 
   const handleManualSwap = (playerId: string) => {
-    if (!currentMatch) return;
+    if (!activeMatch || !activeMatch.teamA || !activeMatch.teamB) return;
     if (!swapPlayerA) {
       setSwapPlayerA(playerId);
       return;
@@ -164,8 +160,8 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
       return;
     }
 
-    const inA1 = currentMatch.teamA.playerIds.includes(swapPlayerA);
-    const inA2 = currentMatch.teamA.playerIds.includes(playerId);
+    const inA1 = activeMatch.teamA.playerIds.includes(swapPlayerA);
+    const inA2 = activeMatch.teamA.playerIds.includes(playerId);
 
     if (inA1 === inA2) {
       setSwapPlayerA(playerId);
@@ -173,78 +169,122 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
     }
 
     const teamAPlayerIds = inA1
-      ? currentMatch.teamA.playerIds.map((id) => (id === swapPlayerA ? playerId : id))
-      : currentMatch.teamA.playerIds.map((id) => (id === playerId ? swapPlayerA : id));
+      ? activeMatch.teamA.playerIds.map((id) => (id === swapPlayerA ? playerId : id))
+      : activeMatch.teamA.playerIds.map((id) => (id === playerId ? swapPlayerA : id));
 
     const teamBPlayerIds = !inA1
-      ? currentMatch.teamB.playerIds.map((id) => (id === swapPlayerA ? playerId : id))
-      : currentMatch.teamB.playerIds.map((id) => (id === playerId ? swapPlayerA : id));
+      ? activeMatch.teamB.playerIds.map((id) => (id === swapPlayerA ? playerId : id))
+      : activeMatch.teamB.playerIds.map((id) => (id === playerId ? swapPlayerA : id));
 
     const updatedMatch: Match = {
-      ...currentMatch,
-      teamA: { ...currentMatch.teamA, playerIds: teamAPlayerIds },
-      teamB: { ...currentMatch.teamB, playerIds: teamBPlayerIds },
+      ...activeMatch,
+      teamA: { ...activeMatch.teamA, playerIds: teamAPlayerIds },
+      teamB: { ...activeMatch.teamB, playerIds: teamBPlayerIds },
     };
 
-    onUpdateMatch(updatedMatch);
+    if (activeMatch.status === 'em_andamento') {
+      onUpdateMatch(updatedMatch);
+    } else {
+      setDraftMatch(updatedMatch);
+    }
     setSwapPlayerA(null);
   };
 
+  // Ao clicar em COMEÇAR RODADA: vincula e persiste efetivamente no banco de dados
   const handleStartRound = () => {
-    if (!currentMatch) return;
-    const updatedMatch: Match = {
-      ...currentMatch,
+    if (!activeMatch || !activeMatch.teamA || !activeMatch.teamB) {
+      alert('Sorteie os times antes de começar a rodada!');
+      return;
+    }
+    const startedMatch: Match = {
+      ...activeMatch,
       status: 'em_andamento',
+      presentPlayerIds: selectedPresentIds,
     };
-    onUpdateMatch(updatedMatch);
+    onUpdateMatch(startedMatch);
+    setDraftMatch(startedMatch);
     setIsSwapping(false);
   };
 
   const handleFinalizeMatch = () => {
-    if (!currentMatch) return;
+    if (!activeMatch) return;
 
     const updatedMatch: Match = {
-      ...currentMatch,
+      ...activeMatch,
       status: 'finalizada',
       setScores: [],
-      teamA: { ...currentMatch.teamA, setWins: teamASets },
-      teamB: { ...currentMatch.teamB, setWins: teamBSets },
+      teamA: { ...activeMatch.teamA, setWins: teamASets },
+      teamB: { ...activeMatch.teamB, setWins: teamBSets },
       finalScore: {
         teamASets: teamASets,
         teamBSets: teamBSets,
       },
+      finalizedAt: new Date().toISOString(),
     };
 
     onUpdateMatch(updatedMatch);
   };
 
   const handleConfirmDelete = () => {
-    if (!currentMatch) return;
+    if (!activeMatch) return;
     setShowDeleteModal(true);
   };
 
   const getPlayer = (id: string) => players.find((p) => p.id === id);
 
-  // Active match is any match that is agendada or em_andamento
-  const hasActiveMatch = currentMatch && (currentMatch.status === 'agendada' || currentMatch.status === 'em_andamento');
+  // Active match is any match that is agendada (draft local) or em_andamento (em jogo)
+  const hasActiveMatch = !!activeMatch;
+
+  // Finalized matches from the last 24h (or the single most recent one if older)
+  const recentFinalizedMatches = React.useMemo(() => {
+    const finalized = pastMatches.filter((m) => m.status === 'finalizada');
+    if (finalized.length === 0) return [];
+
+    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const within24h = finalized.filter((m) => {
+      const finTime = m.finalizedAt
+        ? new Date(m.finalizedAt).getTime()
+        : m.createdAt
+        ? new Date(m.createdAt).getTime()
+        : new Date(m.date + 'T00:00:00').getTime();
+      return now - finTime < TWENTY_FOUR_HOURS_MS;
+    });
+
+    // If there are matches within 24h, return all of them; otherwise return the most recent one
+    return within24h.length > 0 ? within24h : [finalized[0]];
+  }, [pastMatches]);
 
   return (
     <div className="space-y-5 pb-24 animate-fade-in">
+      {/* 0. MVP Banner Cards (Top of Game Day - Hidden when a round is 'em_andamento') */}
+      {activeMatch?.status !== 'em_andamento' &&
+        recentFinalizedMatches.map((match) => (
+          <MvpBannerCard
+            key={match.id}
+            lastFinalizedMatch={match}
+            players={players}
+            session={session}
+            onNavigateToFeedback={onNavigateToFeedback}
+          />
+        ))}
+
       {/* 1. Pending Feedback Banner (If user has unrated finalized match) */}
       {unratedMatch && (
-        <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/20 to-orange-500/10 border border-amber-500/30 rounded-3xl p-4 flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-amber-500 text-white flex items-center justify-center font-bold text-lg shrink-0 shadow-sm">
-              <Star className="w-5 h-5 fill-white" />
+        <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/20 to-orange-500/10 border border-amber-500/30 rounded-3xl p-4.5 flex items-center justify-between shadow-sm">
+          <div className="flex items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-amber-500 text-white flex items-center justify-center font-bold text-lg shrink-0 shadow-sm">
+              <Star className="w-5.5 h-5.5 fill-white" />
             </div>
             <div>
-              <span className="px-2 py-0.5 bg-amber-500/20 text-amber-800 text-[10px] font-bold uppercase tracking-wider rounded-md inline-block mb-0.5">
+              <span className="px-2.5 py-0.5 bg-amber-500/20 text-amber-900 text-xs font-extrabold uppercase tracking-wider rounded-md inline-block mb-1">
                 Avaliação Pendente
               </span>
-              <h4 className="text-xs font-extrabold text-amber-950">
+              <h4 className="text-sm sm:text-base font-extrabold text-amber-950">
                 {unratedMatch.title}
               </h4>
-              <p className="text-[11px] text-amber-800">
+              <p className="text-xs text-amber-900 font-medium">
                 Avalie o equilíbrio dos times para manter as notas atualizadas.
               </p>
             </div>
@@ -252,7 +292,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
           <button
             type="button"
             onClick={onNavigateToFeedback}
-            className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 active:scale-95 text-slate-950 font-extrabold text-xs rounded-xl shadow transition-all shrink-0 cursor-pointer flex items-center gap-1"
+            className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 active:scale-95 text-slate-950 font-black text-xs sm:text-sm rounded-xl shadow transition-all shrink-0 cursor-pointer flex items-center gap-1"
           >
             Avaliar <ChevronRight className="w-4 h-4" />
           </button>
@@ -273,17 +313,33 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
           </div>
           <button
             type="button"
-            onClick={onStartManualMatch}
+            onClick={() => {
+              const dateFormatted = new Date().toLocaleDateString('pt-BR', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+              });
+              setDraftMatch({
+                id: `match_${Date.now()}`,
+                date: new Date().toISOString().split('T')[0],
+                title: `Rodada de Vôlei (${dateFormatted})`,
+                status: 'agendada',
+                teamA: { id: 'teamA', name: 'Time A', color: 'bg-blue-600', playerIds: [], setWins: 0 },
+                teamB: { id: 'teamB', name: 'Time B', color: 'bg-amber-600', playerIds: [], setWins: 0 },
+                presentPlayerIds: selectedPresentIds,
+                createdAt: new Date().toISOString(),
+              });
+            }}
             className="w-full py-4 px-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm rounded-2xl shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98"
           >
             <Volleyball className="w-5 h-5" />
-            Iniciar uma rodada de vôlei hoje
+            Montar e sortear times de vôlei hoje
           </button>
         </div>
       )}
 
       {/* 3. Active Round View (Status 'agendada' or 'em_andamento') */}
-      {hasActiveMatch && (
+      {hasActiveMatch && activeMatch && (
         <>
           {/* Header Banner */}
           <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 text-white rounded-3xl p-5 shadow-xl relative overflow-hidden border border-slate-800">
@@ -291,51 +347,49 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
 
             <div className="flex items-start justify-between">
               <div>
-                <span className="px-2.5 py-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold uppercase tracking-wider rounded-full inline-block mb-2">
-                  {currentMatch.status === 'em_andamento' ? '🔥 Rodada Em Andamento' : '⚡ Montando Times'}
+                <span className="px-3 py-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs font-black uppercase tracking-wider rounded-full inline-block mb-2">
+                  {activeMatch.status === 'em_andamento' ? '🔥 Rodada Em Andamento' : '⚡ Montando Times'}
                 </span>
-                <h2 className="text-xl font-extrabold tracking-tight">{currentMatch.title}</h2>
-                <p className="text-xs text-slate-300 mt-1 flex items-center gap-1">
-                  <span>📅 {new Date(currentMatch.date + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                <h2 className="text-xl sm:text-2xl font-black tracking-tight">{activeMatch.title}</h2>
+                <p className="text-xs sm:text-sm text-slate-300 mt-1.5 flex items-center gap-1.5 font-medium">
+                  <span>📅 {new Date(activeMatch.date + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
                   <span>•</span>
                   <span>{selectedPresentIds.length} Atletas Confirmados</span>
                 </p>
               </div>
 
               <div className="flex items-center gap-2">
-                {currentMatch.status === 'agendada' && (
-                  <button
-                    type="button"
-                    onClick={handleConfirmDelete}
-                    title="Excluir/Cancelar Rodada"
-                    className="p-2.5 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 transition-all cursor-pointer"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </button>
-                )}
-                <div className="w-10 h-10 rounded-2xl bg-white/10 backdrop-blur-md flex items-center justify-center text-emerald-400 font-bold shadow-inner shrink-0">
-                  <Volleyball className="w-6 h-6" />
+                <button
+                  type="button"
+                  onClick={handleConfirmDelete}
+                  title="Excluir/Cancelar Rodada"
+                  className="p-2.5 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 transition-all cursor-pointer"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
+                <div className="w-11 h-11 rounded-2xl bg-white/10 backdrop-blur-md flex items-center justify-center text-emerald-400 font-bold shadow-inner shrink-0">
+                  <Volleyball className="w-6.5 h-6.5" />
                 </div>
               </div>
             </div>
           </div>
 
           {/* Presence Selection ("Quem vai jogar hoje?") - Available while status is 'agendada' */}
-          {currentMatch.status === 'agendada' && (
+          {activeMatch.status === 'agendada' && (
             <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-4">
               <div className="flex items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    <Users className="w-4 h-4 text-emerald-600" />
+                  <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                    <Users className="w-5 h-5 text-emerald-600" />
                     Quem vai jogar hoje?
                   </h3>
-                  <p className="text-xs text-slate-500">Marque os atletas presentes na quadra</p>
+                  <p className="text-xs text-slate-500 font-medium">Marque os atletas presentes na quadra</p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
                     onClick={() => setShowAddGuestModal(true)}
-                    className="text-xs font-extrabold text-purple-700 hover:text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200/80 px-2.5 py-1 rounded-xl cursor-pointer flex items-center gap-1 shadow-2xs transition-all"
+                    className="text-xs font-black text-purple-700 hover:text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-3 py-1.5 rounded-xl cursor-pointer flex items-center gap-1 shadow-2xs transition-all"
                   >
                     <UserPlus className="w-3.5 h-3.5 text-purple-600" />
                     + Convidado
@@ -343,14 +397,14 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                   <button
                     type="button"
                     onClick={selectAll}
-                    className="text-xs font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/60 px-2.5 py-1 rounded-xl cursor-pointer transition-all"
+                    className="text-xs font-extrabold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 px-3 py-1.5 rounded-xl cursor-pointer transition-all"
                   >
                     Marcar Todos ({players.length})
                   </button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                 {[...players]
                   .sort((a, b) => {
                     if (a.isGuest && !b.isGuest) return 1;
@@ -367,23 +421,22 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                         <button
                           type="button"
                           onClick={() => togglePresence(p.id)}
-                          className={`w-full p-2 rounded-2xl border text-left transition-all flex items-center gap-2 cursor-pointer ${
-                            isSelected
+                          className={`w-full p-2.5 rounded-2xl border text-left transition-all flex items-center gap-2.5 cursor-pointer ${isSelected
                               ? p.isGuest
-                                ? 'bg-purple-50/90 border-purple-300 ring-2 ring-purple-500/20'
-                                : 'bg-emerald-50/80 border-emerald-300 ring-2 ring-emerald-500/20'
+                                ? 'bg-purple-50/95 border-purple-300 ring-2 ring-purple-500/20'
+                                : 'bg-emerald-50/90 border-emerald-300 ring-2 ring-emerald-500/20'
                               : 'bg-slate-50 border-slate-200 opacity-60'
-                          }`}
+                            }`}
                         >
                           <PlayerAvatar player={p} size="sm" />
                           <div className="min-w-0 flex-1">
-                            <p className="text-xs font-bold text-slate-800 truncate">{p.name}</p>
+                            <p className="text-sm font-black text-slate-900 truncate">{p.name}</p>
                             {p.isGuest ? (
-                              <p className="text-[10px] text-purple-700 font-bold flex items-center gap-0.5 truncate">
-                                Convidado • Nota 3.0
+                              <p className="text-xs text-purple-700 font-extrabold flex items-center gap-0.5 truncate">
+                                Convidado
                               </p>
                             ) : (
-                              <p className="text-[10px] text-slate-500 font-medium">{p.matchesPlayed || 0} jogos</p>
+                              <p className="text-xs text-slate-500 font-semibold">{p.matchesPlayed || 0} jogos</p>
                             )}
                           </div>
                         </button>
@@ -419,7 +472,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
           )}
 
           {/* Teams Grid & Match Controls */}
-          {currentMatch.teamA && currentMatch.teamB && (
+          {activeMatch.teamA && activeMatch.teamB && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
@@ -435,15 +488,14 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                     <MessageCircle className="w-3.5 h-3.5 fill-white" />
                     <span>Compartilhar Times</span>
                   </button>
-                  {currentMatch.status === 'agendada' && (
+                  {activeMatch.status === 'agendada' && (
                     <button
                       type="button"
                       onClick={() => setIsSwapping(!isSwapping)}
-                      className={`text-xs font-bold px-3 py-1.5 rounded-xl border transition-all flex items-center gap-1 cursor-pointer ${
-                        isSwapping
+                      className={`text-xs font-bold px-3 py-1.5 rounded-xl border transition-all flex items-center gap-1 cursor-pointer ${isSwapping
                           ? 'bg-amber-500 text-white border-amber-500'
                           : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
-                      }`}
+                        }`}
                     >
                       <ArrowUpDown className="w-3.5 h-3.5" />
                       {isSwapping ? 'Cancelar Troca' : 'Troca Manual'}
@@ -460,8 +512,8 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
 
               {/* Teams Display */}
               {(() => {
-                const teamAPlayersList = (currentMatch.teamA.playerIds || []).map((id) => getPlayer(id)).filter(Boolean) as Player[];
-                const teamBPlayersList = (currentMatch.teamB.playerIds || []).map((id) => getPlayer(id)).filter(Boolean) as Player[];
+                const teamAPlayersList = (activeMatch.teamA.playerIds || []).map((id) => getPlayer(id)).filter(Boolean) as Player[];
+                const teamBPlayersList = (activeMatch.teamB.playerIds || []).map((id) => getPlayer(id)).filter(Boolean) as Player[];
 
                 const allPlayers = [...teamAPlayersList, ...teamBPlayersList];
                 const isOdd = allPlayers.length % 2 !== 0;
@@ -495,9 +547,9 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                     <div className="bg-white rounded-3xl border-2 border-blue-100 shadow-sm overflow-hidden">
                       <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-4 text-white flex items-center justify-between gap-2">
                         <div>
-                          <h4 className="font-extrabold text-base tracking-tight">{currentMatch.teamA.name}</h4>
+                          <h4 className="font-extrabold text-base tracking-tight">{activeMatch.teamA.name}</h4>
                           <p className="text-[11px] text-blue-100 font-medium">
-                            {currentMatch.teamA.playerIds.length} Jogadores
+                            {activeMatch.teamA.playerIds.length} Jogadores
                           </p>
                         </div>
                         <div className="bg-white/20 px-2.5 py-1 rounded-xl backdrop-blur-xs border border-white/25 shrink-0 text-xs sm:text-sm font-black text-white flex items-center gap-1">
@@ -507,7 +559,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                       </div>
 
                       <div className="p-3 divide-y divide-slate-100">
-                        {currentMatch.teamA.playerIds.map((id) => {
+                        {activeMatch.teamA.playerIds.map((id) => {
                           const p = getPlayer(id);
                           if (!p) return null;
                           const isSelectedForSwap = swapPlayerA === p.id;
@@ -516,9 +568,8 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                             <div
                               key={p.id}
                               onClick={() => isSwapping && handleManualSwap(p.id)}
-                              className={`py-2.5 px-2 flex items-center justify-between transition-all rounded-xl ${
-                                isSwapping ? 'cursor-pointer hover:bg-blue-50' : ''
-                              } ${isSelectedForSwap ? 'bg-amber-100 ring-2 ring-amber-500' : ''}`}
+                              className={`py-2.5 px-2 flex items-center justify-between transition-all rounded-xl ${isSwapping ? 'cursor-pointer hover:bg-blue-50' : ''
+                                } ${isSelectedForSwap ? 'bg-amber-100 ring-2 ring-amber-500' : ''}`}
                             >
                               <div className="flex items-center gap-2.5">
                                 <PlayerAvatar player={p} size="sm" />
@@ -536,9 +587,9 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                     <div className="bg-white rounded-3xl border-2 border-amber-100 shadow-sm overflow-hidden">
                       <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-4 text-white flex items-center justify-between gap-2">
                         <div>
-                          <h4 className="font-extrabold text-base tracking-tight">{currentMatch.teamB.name}</h4>
+                          <h4 className="font-extrabold text-base tracking-tight">{activeMatch.teamB.name}</h4>
                           <p className="text-[11px] text-amber-100 font-medium">
-                            {currentMatch.teamB.playerIds.length} Jogadores
+                            {activeMatch.teamB.playerIds.length} Jogadores
                           </p>
                         </div>
                         <div className="bg-white/20 px-2.5 py-1 rounded-xl backdrop-blur-xs border border-white/25 shrink-0 text-xs sm:text-sm font-black text-white flex items-center gap-1">
@@ -548,7 +599,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                       </div>
 
                       <div className="p-3 divide-y divide-slate-100">
-                        {currentMatch.teamB.playerIds.map((id) => {
+                        {activeMatch.teamB.playerIds.map((id) => {
                           const p = getPlayer(id);
                           if (!p) return null;
                           const isSelectedForSwap = swapPlayerA === p.id;
@@ -557,9 +608,8 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                             <div
                               key={p.id}
                               onClick={() => isSwapping && handleManualSwap(p.id)}
-                              className={`py-2.5 px-2 flex items-center justify-between transition-all rounded-xl ${
-                                isSwapping ? 'cursor-pointer hover:bg-amber-50' : ''
-                              } ${isSelectedForSwap ? 'bg-amber-100 ring-2 ring-amber-500' : ''}`}
+                              className={`py-2.5 px-2 flex items-center justify-between transition-all rounded-xl ${isSwapping ? 'cursor-pointer hover:bg-amber-50' : ''
+                                } ${isSelectedForSwap ? 'bg-amber-100 ring-2 ring-amber-500' : ''}`}
                             >
                               <div className="flex items-center gap-2.5">
                                 <PlayerAvatar player={p} size="sm" />
@@ -587,7 +637,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
               </button>
 
               {/* Start Round CTA (if status is 'agendada') */}
-              {currentMatch.status === 'agendada' && (
+              {activeMatch.status === 'agendada' && (
                 <div className="bg-slate-900 text-white rounded-3xl p-5 space-y-3 shadow-xl border border-slate-800">
                   <div className="flex items-center gap-2">
                     <Play className="w-5 h-5 text-emerald-400 fill-emerald-400" />
@@ -618,7 +668,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
               )}
 
               {/* Finalize Score Controls (Unlocked when status is 'em_andamento') */}
-              {currentMatch.status === 'em_andamento' && (
+              {activeMatch.status === 'em_andamento' && (
                 <div className="bg-slate-900 text-white rounded-3xl p-5 space-y-4 shadow-xl border border-slate-800">
                   <div>
                     <h4 className="text-sm font-bold flex items-center gap-2">
@@ -632,7 +682,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                   <div className="grid grid-cols-2 gap-3 bg-slate-800/90 p-4 rounded-2xl">
                     {/* Team A Sets */}
                     <div className="flex flex-col items-center gap-1.5 p-2 bg-slate-900/60 rounded-xl border border-blue-500/30">
-                      <span className="text-xs font-bold text-blue-400 truncate max-w-[130px]">{currentMatch.teamA.name}</span>
+                      <span className="text-xs font-bold text-blue-400 truncate max-w-[130px]">{activeMatch.teamA.name}</span>
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
@@ -655,7 +705,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
 
                     {/* Team B Sets */}
                     <div className="flex flex-col items-center gap-1.5 p-2 bg-slate-900/60 rounded-xl border border-amber-500/30">
-                      <span className="text-xs font-bold text-amber-400 truncate max-w-[130px]">{currentMatch.teamB.name}</span>
+                      <span className="text-xs font-bold text-amber-400 truncate max-w-[130px]">{activeMatch.teamB.name}</span>
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
@@ -677,14 +727,24 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleFinalizeMatch}
-                    className="w-full py-3.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-2xl shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"
-                  >
-                    <CheckCircle2 className="w-5 h-5" />
-                    Finalizar Rodada e Liberar Avaliações
-                  </button>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleFinalizeMatch}
+                      className="flex-1 py-3.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-2xl shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"
+                    >
+                      <CheckCircle2 className="w-5 h-5" />
+                      Finalizar Rodada
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmDelete}
+                      className="py-3.5 px-3 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 font-bold text-xs rounded-2xl border border-rose-500/30 transition-all flex items-center justify-center gap-1 cursor-pointer shrink-0"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Cancelar
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -715,14 +775,15 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  if (currentMatch) {
-                    onDeleteMatch(currentMatch.id);
+                  if (activeMatch) {
+                    onDeleteMatch(activeMatch.id);
+                    setDraftMatch(null);
                   }
                   setShowDeleteModal(false);
                 }}
-                className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs transition-all cursor-pointer shadow-md shadow-rose-600/20"
+                className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs sm:text-sm transition-all cursor-pointer shadow-md shadow-rose-600/20"
               >
-                Sim, Excluir
+                Sim, Cancelar e Excluir
               </button>
             </div>
           </div>
@@ -791,9 +852,9 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
         </div>
       )}
 
-      {showShareTeamsModal && currentMatch && (
+      {showShareTeamsModal && activeMatch && (
         <ShareTeamsModal
-          match={currentMatch}
+          match={activeMatch}
           players={players}
           onClose={() => setShowShareTeamsModal(false)}
         />

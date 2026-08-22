@@ -7,8 +7,10 @@ import {
   getStoredSession,
   saveSession,
   recalculateAllPlayerRatings,
+  recalculatePlayerMvpCounts,
   getStoredBalanceFeedbacks,
   getStoredRatingFeedbacks,
+  getStoredMvpVotes,
   deleteFeedbacksForMatch,
   resetAllData,
   fetchDbFromServer,
@@ -89,11 +91,12 @@ export default function App() {
   useEffect(() => {
     const loadState = async () => {
       const serverData = await fetchDbFromServer();
-      const loadedPlayers = recalculateAllPlayerRatings();
-      setPlayers(loadedPlayers);
-
       const loadedMatches = serverData?.matches || getStoredMatches();
       setMatches(loadedMatches);
+
+      const ratedPlayers = recalculateAllPlayerRatings();
+      const loadedPlayers = recalculatePlayerMvpCounts(ratedPlayers, loadedMatches);
+      setPlayers(loadedPlayers);
 
       const savedSession = getStoredSession();
       if (savedSession) {
@@ -112,30 +115,6 @@ export default function App() {
     };
 
     loadState();
-
-    // Poll local server DB every 3 seconds for real-time updates across devices
-    const interval = setInterval(async () => {
-      const serverData = await fetchDbFromServer();
-      if (serverData) {
-        setPlayers(serverData.players);
-        setMatches(serverData.matches);
-      }
-    }, 3000);
-
-    const handleFocus = async () => {
-      const serverData = await fetchDbFromServer();
-      if (serverData) {
-        setPlayers(serverData.players);
-        setMatches(serverData.matches);
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
-
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('focus', handleFocus);
-    };
   }, []);
 
   const handleLogout = () => {
@@ -171,9 +150,13 @@ export default function App() {
     setActiveTab('game');
   };
 
-  const handleDeleteMatch = (matchId: string) => {
+  const handleDeleteMatch = async (matchId: string) => {
+    // Dispara exclusão imediata no servidor Postgres
+    fetch(`/api/matches/${matchId}`, { method: 'DELETE' }).catch((err) => {
+      console.warn('Erro ao chamar DELETE /api/matches:', err);
+    });
+
     const matchToDelete = matches.find((m) => m.id === matchId);
-    if (!matchToDelete) return;
 
     // 1. Remove match from list
     const updatedMatches = matches.filter((m) => m.id !== matchId);
@@ -459,7 +442,8 @@ export default function App() {
   const [feedbackCount, setFeedbackCount] = useState<number>(0);
 
   const handleFeedbackSubmitted = () => {
-    const updated = recalculateAllPlayerRatings();
+    const updatedRatings = recalculateAllPlayerRatings();
+    const updated = recalculatePlayerMvpCounts(updatedRatings, matches);
     setPlayers(updated);
     setFeedbackCount((c) => c + 1);
   };
@@ -496,8 +480,8 @@ export default function App() {
 
   if (!session || !session.isLoggedIn) {
     return (
-      <div className="h-[100dvh] w-full bg-slate-100 text-slate-900 font-sans antialiased flex justify-center overflow-hidden">
-        <div className="w-full max-w-md h-full flex flex-col bg-slate-50 border-x border-slate-200/60 shadow-2xl relative overflow-hidden">
+      <div className="min-h-[100dvh] w-full bg-slate-100 text-slate-900 font-sans antialiased flex justify-center">
+        <div className="w-full max-w-lg min-h-[100dvh] flex flex-col bg-slate-50 border-x-0 sm:border-x border-slate-200/60 shadow-2xl relative">
           <LoginPage players={players} onLogin={handleLogin} />
         </div>
       </div>
@@ -505,9 +489,9 @@ export default function App() {
   }
 
   return (
-    <div className="h-[100dvh] w-full bg-slate-100 text-slate-900 font-sans antialiased flex justify-center overflow-hidden">
+    <div className="min-h-[100dvh] w-full bg-slate-100 text-slate-900 font-sans antialiased flex justify-center">
       {/* Mobile viewport container */}
-      <div className="w-full max-w-md h-full flex flex-col bg-slate-50 border-x border-slate-200/60 shadow-2xl relative overflow-hidden">
+      <div className="w-full max-w-lg min-h-[100dvh] flex flex-col bg-slate-50 border-x-0 sm:border-x border-slate-200/60 shadow-2xl relative">
         {/* Header */}
         <Header
           session={session}
@@ -517,7 +501,7 @@ export default function App() {
         />
 
         {/* Main Content View */}
-        <main className="flex-1 overflow-y-auto px-4 pt-4 pb-24">
+        <main className="flex-1 overflow-y-auto px-3.5 sm:px-4 pt-3.5 pb-32">
           {activeTab === 'game' && (
             <GameDayTab
               players={players}
