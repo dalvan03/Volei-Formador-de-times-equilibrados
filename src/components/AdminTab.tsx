@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
-import { Users, UserPlus, Shield, Phone, Edit2, Trash2, Volleyball, RefreshCw, CheckCircle2, RotateCcw, ChevronDown } from 'lucide-react';
+import { Users, UserPlus, Shield, Phone, Edit2, Trash2, Volleyball, RefreshCw, CheckCircle2, RotateCcw, ChevronDown, ShieldAlert, FileText } from 'lucide-react';
 import { Player, Match, UserSession } from '../types';
 import { PlayerAvatar } from './PlayerAvatar';
 import { PhotoCapture } from './PhotoCapture';
 import { UserMatchResultBadge } from './UserMatchResultBadge';
 import { MatchHistoryCard } from './MatchHistoryCard';
+import { ActivityLogsModal } from './ActivityLogsModal';
+import { apiRequest } from '../utils/storage';
 
 interface AdminTabProps {
   players: Player[];
@@ -33,6 +35,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   onResetPlayerStats,
 }) => {
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showLogsModal, setShowLogsModal] = useState(false);
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [newPhotoUrl, setNewPhotoUrl] = useState<string | undefined>(undefined);
@@ -44,6 +47,12 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   const [visibleMatchesCount, setVisibleMatchesCount] = useState(5);
 
   const isAdmin = session?.isAdmin || false;
+  const [resetMessage, setResetMessage] = useState('');
+  async function resetPin(id: string) {
+    if (!confirm('Redefinir o PIN e desconectar todos os dispositivos deste atleta?')) return;
+    try { await apiRequest(`/admin/players/${encodeURIComponent(id)}/reset-pin`, 'POST'); setResetMessage('Acesso redefinido. O atleta poderá criar um novo PIN.'); }
+    catch (e) { setResetMessage((e as Error).message); }
+  }
 
   const handleCreatePlayer = (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,6 +76,11 @@ export const AdminTab: React.FC<AdminTabProps> = ({
 
   return (
     <div className="space-y-5 pb-24 animate-fade-in">
+      {isAdmin && <details className="rounded-2xl bg-white p-4 border"><summary className="font-bold cursor-pointer">Recuperar acesso de um atleta</summary>
+        <p className="text-xs text-slate-500 my-2">Confirme a identidade do atleta antes de liberar um novo PIN.</p>
+        {resetMessage && <p role="status" className="text-sm my-2">{resetMessage}</p>}
+        {players.filter(p => !p.isGuest).map(p => <div key={p.id} className="flex justify-between py-2 text-sm"><span>{p.name}</span><button onClick={() => resetPin(p.id)} className="text-indigo-700 font-bold">Redefinir PIN</button></div>)}
+      </details>}
       {/* Header Banner */}
       <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-teal-950 text-white rounded-3xl p-5 shadow-xl relative overflow-hidden border border-slate-800">
         <div className="flex items-center justify-between">
@@ -216,22 +230,54 @@ export const AdminTab: React.FC<AdminTabProps> = ({
       </div>
 
       {/* Squad Stats Action (Admin) */}
-      {isAdmin && onResetPlayerStats && (
-        <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-3">
-          <div>
-            <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Estatísticas do Elenco</h3>
-            <p className="text-xs text-slate-500 mt-0.5">Zerar contagem de vitórias e derrotas acumuladas de todos os atletas.</p>
+      {isAdmin && (
+        <div className="space-y-3">
+          {/* Logs de Auditoria Card */}
+          <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-3xl p-5 shadow-sm border border-indigo-900/60 text-white space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-300 text-[10px] font-extrabold uppercase tracking-wider rounded-full inline-block mb-1 border border-indigo-500/30">
+                  Segurança & Transparência
+                </span>
+                <h3 className="text-sm font-extrabold text-white">Logs de Auditoria do App</h3>
+                <p className="text-xs text-slate-300 mt-0.5">
+                  Visualize o histórico de ações de todos os usuários (partidas, votos, logins e cadastros).
+                </p>
+              </div>
+              <div className="w-10 h-10 rounded-2xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 border border-indigo-500/30">
+                <ShieldAlert className="w-5 h-5" />
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowLogsModal(true)}
+              className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-2xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30 active:scale-98"
+            >
+              <FileText className="w-4 h-4" />
+              Abrir Registro de Logs do Sistema
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowResetStatsModal(true)}
-            className="w-full py-3 px-4 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200/80 font-bold text-xs rounded-2xl transition-all cursor-pointer flex items-center justify-center gap-2"
-          >
-            <RotateCcw className="w-4 h-4 text-amber-600" />
-            Resetar Vitórias e Derrotas do Elenco
-          </button>
+
+          {onResetPlayerStats && (
+            <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-3">
+              <div>
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Estatísticas do Elenco</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Zerar contagem de vitórias e derrotas acumuladas de todos os atletas.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowResetStatsModal(true)}
+                className="w-full py-3 px-4 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200/80 font-bold text-xs rounded-2xl transition-all cursor-pointer flex items-center justify-center gap-2"
+              >
+                <RotateCcw className="w-4 h-4 text-amber-600" />
+                Resetar Vitórias e Derrotas do Elenco
+              </button>
+            </div>
+          )}
         </div>
       )}
+
 
       {/* Add Player Modal */}
       {showAddModal && (
@@ -504,6 +550,10 @@ export const AdminTab: React.FC<AdminTabProps> = ({
             </div>
           </div>
         </div>
+      )}
+      {/* Activity Logs Modal */}
+      {showLogsModal && (
+        <ActivityLogsModal onClose={() => setShowLogsModal(false)} />
       )}
     </div>
   );

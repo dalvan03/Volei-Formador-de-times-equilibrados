@@ -1,10 +1,16 @@
-import React, { useState, useMemo, useRef } from 'react';
-import { Star, CheckCircle2, ShieldAlert, Crown, Trophy, AlertCircle } from 'lucide-react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { Star, CheckCircle2, ShieldAlert, Award, ThumbsUp, ThumbsDown, Crown, Loader2, AlertCircle } from 'lucide-react';
 import { Match, Player, UserSession } from '../types';
+import {
+  submitFeedbackToServer,
+  cleanPhone,
+  getStoredBalanceFeedbacks,
+  logActivity,
+} from '../utils/storage';
 import { StarRating } from './StarRating';
+import { votingOpen, mvpVotingOpen } from '../utils/seasons';
 import { PlayerAvatar } from './PlayerAvatar';
 import { UserMatchResultBadge } from './UserMatchResultBadge';
-import { saveBalanceFeedback, savePlayerRatingFeedbacks, saveMvpVote, getStoredBalanceFeedbacks } from '../utils/storage';
 
 interface FeedbackTabProps {
   currentMatch: Match | null;
@@ -24,10 +30,14 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
   onFeedbackSubmitted,
 }) => {
   const currentUser = session?.player;
+  const [clock, setClock] = useState(Date.now());
+  useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, []);
   const userPhone = session?.phone || '';
 
   // Local state trigger to recalculate pending matches when feedback is submitted
   const [submissionCount, setSubmissionCount] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
 
   // Form input states
   const [wasBalanced, setWasBalanced] = useState<boolean | null>(null);
@@ -60,18 +70,29 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
   const pendingMatchesToRate = useMemo(() => {
     if (!currentUser || !userPhone) return [];
     const balanceFeedbacks = getStoredBalanceFeedbacks();
+    const cleanUserPhone = cleanPhone(userPhone);
 
     return allFinalizedMatches.filter((m) => {
-      const played = m.teamA?.playerIds.includes(currentUser.id) || m.teamB?.playerIds.includes(currentUser.id);
+      if (!votingOpen(m)) return false;
+      const played =
+        m.teamA?.playerIds?.includes(currentUser.id) ||
+        m.teamB?.playerIds?.includes(currentUser.id) ||
+        m.presentPlayerIds?.includes(currentUser.id);
       if (!played) return false;
 
-      const rated = balanceFeedbacks.some((f) => f.matchId === m.id && f.evaluatorPhone === userPhone);
+      const rated = balanceFeedbacks.some(
+        (f) => f.matchId === m.id && cleanPhone(f.evaluatorPhone) === cleanUserPhone
+      );
       return !rated;
     });
-  }, [allFinalizedMatches, currentUser, userPhone, submissionCount]);
+  }, [allFinalizedMatches, currentUser, userPhone, submissionCount, clock]);
 
-  // Target match is ALWAYS the first unrated match (most recent)
-  const targetMatch = pendingMatchesToRate[0] || null;
+  // A WhatsApp link prioritizes its match; authentication and eligibility still apply.
+  const requestedMatch = new URLSearchParams(window.location.search).get('match');
+  const targetMatch = pendingMatchesToRate.find(m => m.id === requestedMatch) || pendingMatchesToRate[0] || null;
+  useEffect(() => {
+    setWasBalanced(null); setStrongerTeam(null); setRatingsMap({}); setSelectedMvpId(null); setValidationErrors({}); setServerError(null);
+  }, [targetMatch?.id]);
 
   // Determine all players from both teams who played this match
   const allMatchPlayers = useMemo(() => {
@@ -86,17 +107,11 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
       .filter(Boolean) as Player[];
   }, [targetMatch, players]);
 
-  // Check if MVP voting window is still open for target match (< 24 hours) - MUST BE DECLARED BEFORE EARLY RETURNS
+  // Check if MVP voting window is still open for target match (24 hours or season end) - MUST BE DECLARED BEFORE EARLY RETURNS
   const isMvpVotingOpen = useMemo(() => {
     if (!targetMatch) return false;
-    const finalizedTime = targetMatch.finalizedAt
-      ? new Date(targetMatch.finalizedAt).getTime()
-      : targetMatch.createdAt
-      ? new Date(targetMatch.createdAt).getTime()
-      : new Date(targetMatch.date + 'T00:00:00').getTime();
-
-    return Date.now() - finalizedTime < 24 * 60 * 60 * 1000;
-  }, [targetMatch]);
+    return mvpVotingOpen(targetMatch);
+  }, [targetMatch, clock]);
 
   if (!session?.isLoggedIn || !currentUser) {
     return (
@@ -143,9 +158,9 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
             <CheckCircle2 className="w-9 h-9" />
           </div>
           <div className="space-y-1">
-            <h3 className="text-lg font-extrabold text-slate-900">Todas as Rodadas Avaliadas!</h3>
+            <h3 className="text-lg font-extrabold text-slate-900">Nenhuma avaliação pendente</h3>
             <p className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed">
-              Você já avaliou todas as rodadas finalizadas em que participou. Obrigado por colaborar para manter os times equilibrados!
+              Você já avaliou suas rodadas ou o prazo expirou. O MVP fica aberto por até 24 horas e as notas gerais por até 96 horas e encerram na virada da temporada.
             </p>
           </div>
         </div>
@@ -173,7 +188,7 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
     setValidationErrors((prev) => ({ ...prev, ratings: false }));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     // 1. Check card 1 (Balance)
@@ -185,7 +200,7 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
       (p) => !ratingsMap[p.id] || ratingsMap[p.id] < 1
     );
 
-    // 3. Check card 3 (Match MVP vote) - Only required if MVP voting is still open (< 24h)
+    // 3. Check card 3 (Match MVP vote) - Only required if MVP voting is still open (24 hours or season end)
     const isCard3Invalid =
       isMvpVotingOpen && otherEligiblePlayers.length > 0 && !selectedMvpId;
 
@@ -209,39 +224,84 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
 
     // Clear any previous error
     setValidationErrors({});
+    setServerError(null);
+    setIsSubmitting(true);
 
-    // 1. Save balance feedback
-    saveBalanceFeedback({
-      id: `bf_${Date.now()}`,
-      matchId: targetMatch.id,
-      evaluatorPhone: userPhone,
-      wasBalanced,
-      strongerTeam,
-      createdAt: new Date().toISOString(),
-    });
+    try {
+      // 1. Array de notas dos colegas
+      const ratingsArray = teammatesToRate.map((p) => ({
+        targetPlayerId: p.id,
+        rating: Number(ratingsMap[p.id]),
+      }));
 
-    // 2. Save player ratings
-    const ratingsArray: { targetPlayerId: string; rating: number }[] = teammatesToRate.map((p) => ({
-      targetPlayerId: p.id,
-      rating: Number(ratingsMap[p.id]),
-    }));
+      // 2. Voto no MVP se selecionado e janela aberta
+      const votedMvp = isMvpVotingOpen && Boolean(selectedMvpId);
+      const matchName = targetMatch.title || `Partida de ${targetMatch.date}`;
 
-    savePlayerRatingFeedbacks(targetMatch.id, userPhone, ratingsArray);
+      const logsToRecord: any[] = [
+        {
+          userName: currentUser.name,
+          userPhone: cleanPhone(userPhone),
+          action: 'Avaliação da Rodada',
+          description: `${currentUser.name} registrou avaliação da rodada "${matchName}" (equilíbrio e notas dos colegas de time).`,
+          category: 'voto',
+        },
+      ];
 
-    // 3. Save MVP vote if selected and voting window is open
-    if (isMvpVotingOpen && selectedMvpId) {
-      saveMvpVote(targetMatch.id, userPhone, selectedMvpId);
+      if (votedMvp) {
+        logsToRecord.push({
+          userName: currentUser.name,
+          userPhone: cleanPhone(userPhone),
+          action: 'Voto no Craque (MVP)',
+          description: `${currentUser.name} registrou voto anônimo para Craque da Partida da rodada "${matchName}".`,
+          category: 'voto',
+        });
+      }
+
+      // Disparar logs de auditoria imediatamente
+      logsToRecord.forEach((log) => {
+        try {
+          logActivity(log);
+        } catch (logErr) {
+          console.warn('Erro ao disparar logActivity:', logErr);
+        }
+      });
+
+      // 3. Envio atômico e seguro para o servidor
+      const result = await submitFeedbackToServer({
+        matchId: targetMatch.id,
+        evaluatorPhone: cleanPhone(userPhone),
+        evaluatorPlayerId: currentUser.id,
+        balanceFeedback: {
+          wasBalanced: wasBalanced!,
+          strongerTeam: wasBalanced ? null : strongerTeam,
+        },
+        ratingFeedbacks: ratingsArray,
+        mvpVote: votedMvp && selectedMvpId ? { targetPlayerId: selectedMvpId } : undefined,
+        activityLogs: logsToRecord,
+      });
+
+      if (!result.success) {
+        setServerError(result.error || 'Não foi possível salvar sua avaliação no servidor. Tente novamente.');
+        setIsSubmitting(false);
+        return;
+      }
+
+      // 4. Reset form state for next round if any
+      setWasBalanced(null);
+      setStrongerTeam(null);
+      setRatingsMap({});
+      setSelectedMvpId(null);
+      setValidationErrors({});
+      setSubmissionCount((prev) => prev + 1);
+
+      onFeedbackSubmitted();
+    } catch (err: any) {
+      console.error('Erro ao enviar avaliação:', err);
+      setServerError('Falha de comunicação com o servidor. Por favor, tente novamente.');
+    } finally {
+      setIsSubmitting(false);
     }
-
-    // Reset form state for next round if any
-    setWasBalanced(null);
-    setStrongerTeam(null);
-    setRatingsMap({});
-    setSelectedMvpId(null);
-    setValidationErrors({});
-    setSubmissionCount((prev) => prev + 1);
-
-    onFeedbackSubmitted();
   };
 
   return (
@@ -457,7 +517,7 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
             </div>
           </div>
 
-          {/* Question 3: Vote for Craque da Partida (Match MVP) - Rendered ONLY if within 24h */}
+          {/* Question 3: Vote for Craque da Partida (Match MVP) - Rendered ONLY if within the voting window */}
           {isMvpVotingOpen && (
             <div
               ref={card3Ref}
@@ -553,13 +613,37 @@ export const FeedbackTab: React.FC<FeedbackTabProps> = ({
             </div>
           )}
 
+          {/* Mensagem de Erro de Conexão com Servidor */}
+          {serverError && (
+            <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center gap-3 text-rose-700 animate-fade-in">
+              <AlertCircle className="w-5 h-5 shrink-0 text-rose-600" />
+              <div className="text-xs font-semibold leading-relaxed">
+                {serverError}
+              </div>
+            </div>
+          )}
+
           {/* Submit button */}
           <button
             type="submit"
-            className="w-full py-4 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-black rounded-2xl shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer text-sm sm:text-base"
+            disabled={isSubmitting}
+            className={`w-full py-4 px-4 font-black rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 text-sm sm:text-base ${
+              isSubmitting
+                ? 'bg-slate-400 text-white cursor-not-allowed shadow-none'
+                : 'bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white shadow-emerald-600/20 cursor-pointer'
+            }`}
           >
-            <CheckCircle2 className="w-5 h-5" />
-            Enviar Avaliação Anônima
+            {isSubmitting ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin" />
+                Gravando seus votos com segurança...
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-5 h-5" />
+                Enviar Avaliação Anônima
+              </>
+            )}
           </button>
         </form>
       )}

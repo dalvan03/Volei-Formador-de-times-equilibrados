@@ -1,0 +1,149 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import { localDate, seasonForDate, nextSeason, seasonBounds } from '../src/utils/seasons';
+
+const url = process.env.TEST_DATABASE_URL;
+test('integração PostgreSQL: acesso, privacidade, votos e fechamento', { skip: !url }, async t => {
+  // Refuse an accidental production target, even if an environment variable is wrong.
+  const parsed = new URL(url!);
+  assert(['localhost','127.0.0.1'].includes(parsed.hostname) && parsed.pathname.endsWith('_test'), 'Use somente um banco local com sufixo _test');
+  process.env.DATABASE_URL = url!;
+  const { client } = await import('../src/db/index');
+  const { createApi } = await import('../src/server/api');
+  const { advanceSeasons, readState } = await import('../src/db/seasonService');
+  const app = express(); app.use(express.json()); app.use('/api',createApi());
+  const server = app.listen(0,'127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening',resolve));
+  const base = `http://127.0.0.1:${(server.address() as any).port}/api`;
+  t.after(async () => { await new Promise<void>(resolve => server.close(() => resolve())); await client.end(); });
+  const request = async (path: string, method='GET', body?: any, cookie?: string) => {
+    const res = await fetch(base+path,{method,headers:{'content-type':'application/json',...(cookie?{cookie}:{})},body:method==='GET'||method==='DELETE'?undefined:JSON.stringify(body||{})});
+    return {status:res.status,json:await res.json(),cookie:res.headers.get('set-cookie')};
+  };
+  const suffix = Date.now().toString();
+  const ids = ['admin','alice','bob','carol'].map(x=>x+suffix);
+  const phones = ['11900000001','11900000002','11900000003','11900000004'];
+  await client`TRUNCATE sessions,credentials,auth_attempts,season_results,seasons,activity_logs,mvp_votes,rating_feedbacks,balance_feedbacks,match_players,matches,players`;
+  await client`INSERT INTO seasons(id) VALUES ('2026-Q3')`;
+  for (let i=0;i<ids.length;i++) await client`INSERT INTO players(id,name,phone,avatar_bg,is_admin) VALUES (${ids[i]},${['Admin','Alice','Bob','Carol'][i]},${i===1?'(11) 90000-0002':phones[i]},'bg-blue-600',${i===0})`;
+  let adminCookie='',aliceCookie='',bobCookie='';
+  await t.test('primeiro acesso, PIN com zero, sessão e autenticação obrigatória', async () => {
+    assert.equal((await request('/db')).status,401);
+    assert.equal((await request('/auth/check','POST',{phone:phones[1]})).json.data.needsName,false);
+    for (let i=0;i<3;i++) {
+      const r = await request('/auth/login','POST',{phone:phones[i],pin:'0012',confirmPin:'0012'});
+      assert.equal(r.status,200); assert.match(r.cookie!,/HttpOnly/); assert.match(r.cookie!,/SameSite=Strict/); assert.match(r.cookie!,/Max-Age=7776000/);
+      const cookie=r.cookie!.split(';')[0]; if(i===0)adminCookie=cookie; if(i===1)aliceCookie=cookie; if(i===2)bobCookie=cookie;
+    }
+    assert.equal((await request('/auth/session','GET',undefined,aliceCookie)).json.data.player.id,ids[1]);
+    assert.equal((await request('/auth/login','POST',{phone:phones[1],pin:'0012'})).status,200);
+    assert.equal((await request('/auth/login','POST',{phone:phones[1],pin:'0013'})).status,401);
+  });
+  await t.test('API não entrega notas a atletas nem aceita privilégios e sincronização antiga', async () => {
+    const db=(await request('/db','GET',undefined,aliceCookie)).json.data;
+    assert(db.players.every((p:any)=>!('rating' in p)&&!('ratingCount' in p)&&!('ratingWeight' in p)));
+    assert.deepEqual(db.ratingFeedbacks,[]); assert.deepEqual(db.mvpVotes,[]);
+    assert.equal((await request('/admin/ratings','GET',undefined,aliceCookie)).status,403);
+    assert.equal((await request('/players/'+ids[1],'PATCH',{name:'Alice',isAdmin:true},aliceCookie)).status,403);
+    assert.equal((await request('/players/'+ids[2],'PATCH',{name:'Troca'},aliceCookie)).status,403);
+    assert.equal((await request('/db','POST',{players:[{id:ids[1],isAdmin:true}]},aliceCookie)).status,410);
+    assert.equal((await request('/admin/ratings','GET',undefined,adminCookie)).status,403);
+    const adminDb=(await request('/db','GET',undefined,adminCookie)).json.data;
+    assert(adminDb.players.every((p:any)=>!('rating' in p)&&!('ratingCount' in p)&&!('ratingWeight' in p)));
+    assert(!('rating' in adminDb.session.player));
+    assert(!('rating' in (await request('/auth/session','GET',undefined,adminCookie)).json.data.player));
+    assert.equal((await request('/admin/players/'+ids[2]+'/reset-pin','POST',{},aliceCookie)).status,403);
+    const csrf=await fetch(base+'/auth/logout',{method:'POST',headers:{'content-type':'application/json',cookie:aliceCookie,origin:'https://outro-site.example'},body:'{}'});
+    assert.equal(csrf.status,403);
+  });
+  await t.test('cadastro concorrente não sobrescreve PIN e sessão expirada não autentica', async () => {
+    const attempts=await Promise.all(['0123','0456'].map(pin=>request('/auth/login','POST',{phone:phones[3],pin,confirmPin:pin})));
+    assert.deepEqual(attempts.map(r=>r.status).sort(),[200,401]);
+    const cookie=attempts.find(r=>r.status===200)!.cookie!.split(';')[0];
+    await client`UPDATE sessions SET expires_at = clock_timestamp() - interval '1 second' WHERE player_id = ${ids[3]}`;
+    assert.equal((await request('/db','GET',undefined,cookie)).status,401);
+  });
+  const seasonId=seasonForDate(localDate()), matchId='match'+suffix;
+  const m={id:matchId,date:localDate(),title:'Teste',status:'finalizada',presentPlayerIds:ids.slice(1),teamA:{id:'teamA',name:'A',color:'blue',playerIds:ids.slice(1,3)},teamB:{id:'teamB',name:'B',color:'red',playerIds:[ids[3]]},finalScore:{teamASets:3,teamBSets:1}};
+  const vote={matchId,evaluatorPhone:phones[0],balanceFeedback:{wasBalanced:true},ratingFeedbacks:[{targetPlayerId:ids[2],rating:5}],mvpVote:{targetPlayerId:ids[2]}};
+  await t.test('partidas e sorteio autorizados; votos atômicos vinculados à sessão', async () => {
+    assert.equal((await request('/matches','POST',m,aliceCookie)).status,403);
+    assert.equal((await request('/matches','POST',m,adminCookie)).status,200);
+    const teams=await request('/teams/generate','POST',{playerIds:ids.slice(1)},adminCookie);
+    assert.equal(teams.status,200); assert.deepEqual(Object.keys(teams.json.data).sort(),['teamA','teamB']);
+    assert.equal((await request('/feedback','POST',vote,aliceCookie)).status,200);
+    assert.equal((await request('/feedback','POST',vote,aliceCookie)).status,200);
+    const rows=await client`SELECT * FROM rating_feedbacks WHERE match_id=${matchId}`;
+    assert.equal(rows.length,1); assert.equal(rows[0].evaluator_phone,phones[1]);
+    assert.equal((await request('/feedback','POST',{...vote,ratingFeedbacks:[{targetPlayerId:ids[2],rating:8}]},aliceCookie)).status,400);
+    assert.equal((await request('/feedback','POST',{...vote,mvpVote:{targetPlayerId:ids[1]}},aliceCookie)).status,400);
+    assert.equal((await request('/feedback','POST',vote,adminCookie)).status,403);
+    const db=(await request('/db','GET',undefined,aliceCookie)).json.data;
+    const match=db.matches.find((x:any)=>x.id===matchId);
+    assert.equal(match.mvpResult.totalVotes,1); assert.deepEqual(match.mvpResult.counts,{});
+  });
+  await t.test('MVP fechado rejeita alteração, mas aceita notas gerais sem MVP', async () => {
+    await client`UPDATE matches SET finalized_at=${new Date(Date.now()-25*3600000).toISOString()} WHERE id=${matchId}`;
+    assert.equal((await request('/feedback','POST',vote,aliceCookie)).status,409);
+    assert.equal((await request('/feedback','POST',{...vote,mvpVote:undefined},aliceCookie)).status,200);
+    const votes=await client`SELECT * FROM mvp_votes WHERE match_id=${matchId}`;
+    assert.equal(votes.length,1); assert.equal(votes[0].target_player_id,ids[2]);
+    await client`UPDATE matches SET finalized_at=${new Date().toISOString()} WHERE id=${matchId}`;
+  });
+  await t.test('prazo vencido rejeita votos sem alterar dados e não aceita timestamps do cliente', async () => {
+    const [m]=await client`SELECT * FROM matches WHERE id=${matchId}`;
+    assert(new Date(m.finalized_at).getTime()>Date.now()-60000);
+    await client`UPDATE matches SET voting_closes_at=${new Date(Date.now()-1).toISOString()} WHERE id=${matchId}`;
+    assert.equal((await request('/feedback','POST',{...vote,createdAt:'2026-07-01'},aliceCookie)).status,409);
+    assert.equal((await client`SELECT * FROM rating_feedbacks WHERE match_id=${matchId}`).length,1);
+  });
+  await t.test('cinco erros bloqueiam mesmo PIN correto; admin recupera e revoga sessões', async () => {
+    await client`DELETE FROM auth_attempts`;
+    for(let i=0;i<5;i++) assert.equal((await request('/auth/login','POST',{phone:phones[2],pin:'9999'})).status,401);
+    assert.equal((await request('/auth/login','POST',{phone:phones[2],pin:'0012'})).status,429);
+    assert.equal((await request('/admin/players/'+ids[2]+'/reset-pin','POST',{},adminCookie)).status,200);
+    assert.equal((await request('/db','GET',undefined,bobCookie)).status,401);
+    assert.equal((await request('/auth/login','POST',{phone:phones[2],pin:'0042',confirmPin:'0042'})).status,200);
+    await request('/auth/logout','POST',{},aliceCookie);
+    assert.equal((await request('/db','GET',undefined,aliceCookie)).status,401);
+  });
+  await t.test('limite por IP bloqueia tentativas distribuídas entre contas', async () => {
+    await client`DELETE FROM auth_attempts`;
+    for(let i=0;i<30;i++) assert.equal((await request('/auth/check','POST',{phone:phones[i%4]})).status,200);
+    assert.equal((await request('/auth/check','POST',{phone:phones[0]})).status,429);
+    await client`DELETE FROM auth_attempts`;
+  });
+  await t.test('peso anterior entra uma vez; fechar duas vezes não duplica medalhas nem divide duas vezes', async () => {
+    const oldId='old'+suffix;
+    await client`INSERT INTO matches(id,date,status,team_a_name,team_a_color,team_b_name,team_b_color,created_at,season_id) VALUES (${oldId},'2026-06-01','finalizada','A','blue','B','red','2026-06-01T20:00:00Z','2026-Q2')`;
+    await client`INSERT INTO rating_feedbacks(id,match_id,evaluator_phone,target_player_id,rating,created_at) VALUES (${suffix},${oldId},${phones[1]},${ids[2]},3,'2026-06-01T21:00:00Z')`;
+    const before=await readState(client,seasonId);
+    const bob=before.players.find(p=>p.id===ids[2])!;
+    assert.equal(bob.rating,4); assert.equal(bob.ratingWeight,2); assert.equal(bob.ratingCount,1);
+    const next=nextSeason(seasonId), boundary=Date.parse(seasonBounds(seasonId).endsAt);
+    await client`INSERT INTO matches(id,date,status,team_a_name,team_a_color,team_b_name,team_b_color,created_at,season_id) VALUES ('unfinished',${localDate()},'em_andamento','A','blue','B','red',${new Date().toISOString()},${seasonId})`;
+    const close=()=>client.begin(async sql=>{await sql`SELECT pg_advisory_xact_lock(260917)`; await advanceSeasons(sql,boundary);});
+    await Promise.all([close(),close()]);
+    const results=await client`SELECT * FROM season_results WHERE season_id=${seasonId}`;
+    assert.equal(results.length,4);
+    assert.equal((await client`SELECT status FROM matches WHERE id='unfinished'`)[0].status,'encerrada');
+    assert.equal(results.find(r=>r.player_id===ids[2])?.medal,'gold');
+    assert.equal(results.find(r=>r.player_id===ids[1])?.medal,'gold');
+    assert.equal(results.find(r=>r.player_id===ids[3])?.medal,'bronze');
+    const after=await readState(client,next,boundary);
+    const nextBob=after.players.find(p=>p.id===ids[2])!;
+    assert.equal(nextBob.rating,4); assert.equal(nextBob.ratingWeight,1); assert.equal(nextBob.wins,0); assert.equal(nextBob.medals?.gold,1); assert.equal(nextBob.mvpCount,1);
+    assert.equal((await client`SELECT * FROM matches WHERE id=${oldId}`).length,1);
+    await client.begin(async sql=>{await sql`SELECT pg_advisory_xact_lock(260917)`;await advanceSeasons(sql,Date.parse(seasonBounds(next).endsAt));});
+    const following=await readState(client,nextSeason(next));
+    assert.equal(following.players.find(p=>p.id===ids[2])?.ratingWeight,0.5);
+    assert.equal(following.players.find(p=>p.id===ids[2])?.medals?.gold,1);
+    const freshAlice=await request('/auth/login','POST',{phone:phones[1],pin:'0012'});
+    const own=await request('/me/seasons?playerId='+ids[2],'GET',undefined,freshAlice.cookie!.split(';')[0]);
+    assert(own.json.data.every((r:any)=>r.votesReceived===0));
+    const archived=await request('/seasons/'+seasonId+'/ranking','GET',undefined,adminCookie);
+    assert(archived.json.data.every((p:any)=>!('rating' in p)&&!('ratingWeight' in p)));
+    assert.equal((await request('/matches/'+oldId,'DELETE',undefined,adminCookie)).status,409);
+  });
+});

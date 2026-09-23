@@ -3,7 +3,7 @@ import postgres from 'postgres';
 import * as schema from './schema';
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const connectionString =
   process.env.DATABASE_URL || 'postgres://postgres:postgrespassword@localhost:5432/voleidb';

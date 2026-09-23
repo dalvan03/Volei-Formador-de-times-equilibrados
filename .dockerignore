@@ -8,3 +8,9 @@ yarn-debug.log*
 yarn-error.log*
 data
 pgdata
+backups
+tests
+ops
+.codex
+.agents
+SERVER-ROLES.md

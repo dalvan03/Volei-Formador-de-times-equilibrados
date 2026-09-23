@@ -24,7 +24,7 @@ services:
       - postgres
     command: ["npx", "drizzle-kit", "studio", "--config=drizzle.config.ts", "--port", "4983", "--host", "0.0.0.0"]
     environment:
-      - DATABASE_URL=postgres://postgres:postgrespassword@postgres:5432/voleidb
+      - DATABASE_URL=postgres://postgres:postgrespassword@volei-postgres:5432/voleidb
     ports:
       - "4983:4983"
     networks:
@@ -36,16 +36,36 @@ services:
       dockerfile: Dockerfile
     container_name: volei-formador-de-times
     restart: unless-stopped
+    volumes:
+      - ./backups:/app/backups
     depends_on:
       - postgres
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - DATABASE_URL=postgres://postgres:postgrespassword@postgres:5432/voleidb
-    volumes:
-      - ./data:/app/data
+      - DATABASE_URL=postgres://postgres:postgrespassword@volei-postgres:5432/voleidb
+      - TRUST_PROXY=${TRUST_PROXY:-172.20.0.2/32}
+      - WHATSAPP_ENABLED=${WHATSAPP_ENABLED:-false}
+      - EVOLUTION_URL=${EVOLUTION_URL:-http://evolution-api:8080}
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY:-}
+      - EVOLUTION_INSTANCE=${EVOLUTION_INSTANCE:-}
+      - WHATSAPP_GROUP_JID=${WHATSAPP_GROUP_JID:-}
+      - WHATSAPP_START_AT=${WHATSAPP_START_AT:-}
+      - APP_PUBLIC_URL=${APP_PUBLIC_URL:-https://volei.anyco.com.br}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(async r=>{const j=await r.json();process.exit(r.ok&&j.data?.healthy?0:1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - nginx-proxy-network
+
 
 networks:
   nginx-proxy-network:

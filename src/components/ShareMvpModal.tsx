@@ -13,9 +13,9 @@ import {
 } from 'lucide-react';
 import { Match, Player, UserSession } from '../types';
 import { MatchMvpResult } from '../utils/storage';
-import { PlayerAvatar } from './PlayerAvatar';
+import { MvpWinners } from './MvpWinners';
 import logoImg from '../assets/logo.png';
-import mockImg from '../assets/mock.png';
+import mockImg from '../assets/mock.webp';
 
 
 interface ShareMvpModalProps {
@@ -40,12 +40,16 @@ export const ShareMvpModal: React.FC<ShareMvpModalProps> = ({
 
   const top3 = mvpResult.top3;
   const winner = top3[0];
-  const second = top3[1];
-  const third = top3[2];
+  const winners = mvpResult.winners;
+  const hasTie = winners.length > 1;
 
   const winnerName = winner?.player.name || 'Atleta';
   const winnerFirstName = winner?.player.name ? winner.player.name.trim().split(/\s+/)[0] : 'Atleta';
-  const captionText = `🔥 CRAQUE DA PARTIDA! 🏐\n👑 ${winnerName} foi eleito(a) o Craque do Jogo com ${winner?.percentage || 0}% dos votos na rodada de ${new Date(match.date + 'T00:00:00').toLocaleDateString('pt-BR')}! Parabéns! 🌟`;
+  const percentage = (winner?.percentage || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const date = new Date(match.date + 'T00:00:00').toLocaleDateString('pt-BR');
+  const captionText = hasTie
+    ? `🔥 CRAQUES DA PARTIDA! 🏐\n👑 ${winners.map(player => player.name).join(' e ')} empataram em 1º lugar, com ${percentage}% dos votos cada, na rodada de ${date}! Parabéns aos craques! 🌟`
+    : `🔥 CRAQUE DA PARTIDA! 🏐\n👑 ${winnerName} foi eleito(a) o Craque do Jogo com ${percentage}% dos votos na rodada de ${date}! Parabéns! 🌟`;
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -201,7 +205,7 @@ export const ShareMvpModal: React.FC<ShareMvpModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-extrabold text-white leading-tight">
-                Compartilhar Craque da Partida
+                {hasTie ? 'Compartilhar Craques da Partida' : 'Compartilhar Craque da Partida'}
               </h3>
               <p className="text-[10px] text-slate-400">
                 Gere a arte oficial e compartilhe com a galera
@@ -223,69 +227,83 @@ export const ShareMvpModal: React.FC<ShareMvpModalProps> = ({
           <div className="flex justify-center my-1">
             <div
               ref={cardRef}
-              className="w-[320px] h-[569px] relative overflow-hidden shadow-2xl select-none shrink-0 bg-black"
+              className={`w-[320px] relative overflow-hidden shadow-2xl select-none shrink-0 bg-black ${hasTie ? 'min-h-[569px]' : 'h-[569px]'}`}
             >
-              {/* FOTO DINÂMICA */}
-              <div
-                className="absolute z-0 rounded-full overflow-hidden bg-black"
-                style={{
-                  left: '22.1%',
-                  top: '45.8%',
-                  width: '55.8%',
-                  aspectRatio: '1 / 1',
-                }}
-              >
-                {winner?.player.photoUrl ? (
-                  <img
-                    src={winner.player.photoUrl}
-                    alt={winner.player.name}
-                    className="w-full h-full object-cover"
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
+              {hasTie ? (
+                <div className="flex min-h-[569px] flex-col justify-center bg-gradient-to-b from-slate-900 via-slate-950 to-emerald-950 px-4 py-8 text-center">
+                  <img src={logoImg} alt="Vôlei" className="mx-auto mb-5 h-16 w-16 object-contain" />
+                  <Crown className="mx-auto mb-2 h-9 w-9 text-amber-400" />
+                  <h2 className="text-3xl font-black uppercase leading-tight text-amber-300">Craques<br />da partida</h2>
+                  <p className="mt-3 break-words text-sm font-bold text-white">{match.title || `Rodada de ${date}`}</p>
+                  <p className="mb-5 mt-1 text-xs text-slate-300">Empate em 1º lugar • Eleitos pela galera</p>
+                  <MvpWinners winners={winners} percentage={winner?.percentage || 0} />
+                  <p className="mt-6 text-xs font-bold uppercase tracking-wider text-emerald-300">{mvpResult.totalVotes} votos • {date}</p>
+                </div>
+              ) : (
+                <>
+                  {/* FOTO DINÂMICA */}
                   <div
-                    className={`w-full h-full ${winner?.player.avatarBg || 'bg-amber-600'
-                      } text-white flex items-center justify-center font-black text-6xl`}
+                    className="absolute z-0 rounded-full overflow-hidden bg-black"
+                    style={{
+                      left: '22.1%',
+                      top: '45.8%',
+                      width: '55.8%',
+                      aspectRatio: '1 / 1',
+                    }}
                   >
-                    {winner?.player.name?.charAt(0).toUpperCase() || 'A'}
+                    {winner?.player.photoUrl ? (
+                      <img
+                        src={winner.player.photoUrl}
+                        alt={winner.player.name}
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div
+                        className={`w-full h-full ${winner?.player.avatarBg || 'bg-amber-600'
+                          } text-white flex items-center justify-center font-black text-6xl`}
+                      >
+                        {winner?.player.name?.charAt(0).toUpperCase() || 'A'}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
 
-              {/* ARTE FIXA */}
-              <img
-                src={mockImg}
-                alt="Mock Craque da Partida"
-                className="absolute inset-0 z-10 w-full h-full object-fill pointer-events-none"
-                draggable={false}
-              />
+                  {/* ARTE FIXA */}
+                  <img
+                    src={mockImg}
+                    alt="Mock Craque da Partida"
+                    className="absolute inset-0 z-10 w-full h-full object-fill pointer-events-none"
+                    draggable={false}
+                  />
 
-              {/* NOME NA TARJA */}
-              <div
-                className="absolute z-20 left-1/2 w-[74%] text-center uppercase text-black leading-none whitespace-nowrap"
-                style={{
-                  top: '75.2%',
-                  fontSize: '32px',
-                  fontFamily: '"Permanent Marker", cursive',
+                  {/* NOME NA TARJA */}
+                  <div
+                    className="absolute z-20 left-1/2 w-[74%] text-center uppercase text-black leading-none whitespace-nowrap"
+                    style={{
+                      top: '75.2%',
+                      fontSize: '32px',
+                      fontFamily: '"Permanent Marker", cursive',
 
-                  // Centraliza e inclina levemente o nome
-                  transform: 'translateX(-50%) rotate(-3deg)',
-                }}
-              >
-                {winnerFirstName}
-              </div>
+                      // Centraliza e inclina levemente o nome
+                      transform: 'translateX(-50%) rotate(-3deg)',
+                    }}
+                  >
+                    {winnerFirstName}
+                  </div>
 
-              {/* PORCENTAGEM ABAIXO DE VOTOS DA GALERA */}
-              <div
-                className="absolute z-20 left-1/2 -translate-x-1/2 w-full text-center font-black text-white leading-none tracking-tight"
-                style={{
-                  top: '86.5%',
-                  fontSize: '38px',
-                  textShadow: '0 4px 14px rgba(0,0,0,0.8)',
-                }}
-              >
-                {winner?.percentage || 0}%
-              </div>
+                  {/* PORCENTAGEM ABAIXO DE VOTOS DA GALERA */}
+                  <div
+                    className="absolute z-20 left-1/2 -translate-x-1/2 w-full text-center font-black text-white leading-none tracking-tight"
+                    style={{
+                      top: '86.5%',
+                      fontSize: '38px',
+                      textShadow: '0 4px 14px rgba(0,0,0,0.8)',
+                    }}
+                  >
+                    {percentage}%
+                  </div>
+                </>
+              )}
             </div>
           </div>
 

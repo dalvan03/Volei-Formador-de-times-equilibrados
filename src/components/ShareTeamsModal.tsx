@@ -277,10 +277,7 @@ Bora pro jogo! 🔥`;
                           {teamAPlayers.length} jogadores
                         </span>
                       </div>
-                      <div className="bg-blue-950 border border-blue-500/30 px-1.5 py-0.5 rounded-lg text-[10px] font-black text-white flex items-center gap-0.5">
-                        <span>{teamAAvg.toFixed(1)}</span>
-                        <span className="text-amber-300">★</span>
-                      </div>
+
                     </div>
 
                     <div className="space-y-1.5">
@@ -306,10 +303,7 @@ Bora pro jogo! 🔥`;
                           {teamBPlayers.length} jogadores
                         </span>
                       </div>
-                      <div className="bg-amber-950 border border-amber-500/30 px-1.5 py-0.5 rounded-lg text-[10px] font-black text-white flex items-center gap-0.5">
-                        <span>{teamBAvg.toFixed(1)}</span>
-                        <span className="text-amber-300">★</span>
-                      </div>
+
                     </div>
 
                     <div className="space-y-1.5">

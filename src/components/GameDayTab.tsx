@@ -17,7 +17,15 @@ import {
   MessageCircle,
 } from 'lucide-react';
 import { Player, Match, UserSession } from '../types';
-import { generateBalancedTeams } from '../utils/teamGenerator';
+import { apiRequest } from '../utils/storage';
+import { localDate, votingDeadline, votingOpen, mvpVotingDeadline, mvpVotingOpen } from '../utils/seasons';
+import {
+  getStoredDraftMatch,
+  saveStoredDraftMatch,
+  getStoredDraftPresence,
+  saveStoredDraftPresence,
+  clearStoredDraft,
+} from '../utils/storage';
 import { PlayerAvatar } from './PlayerAvatar';
 import { ShareTeamsModal } from './ShareTeamsModal';
 import { MvpBannerCard } from './MvpBannerCard';
@@ -28,11 +36,11 @@ interface GameDayTabProps {
   pastMatches: Match[];
   session: UserSession | null;
   unratedMatch: Match | null;
-  onUpdateMatch: (match: Match) => void;
-  onDeleteMatch: (matchId: string) => void;
-  onNavigateToFeedback: () => void;
-  onStartManualMatch: () => void;
-  onAddGuest?: (guestName?: string) => Player;
+  onUpdateMatch: (match: Match) => Promise<boolean>;
+  onDeleteMatch: (matchId: string) => Promise<boolean>;
+  onNavigateToFeedback?: () => void;
+  onStartManualMatch?: () => void;
+  onAddGuest?: (guestName?: string) => Promise<Player | null>;
   onDeleteGuest?: (playerId: string) => void;
 }
 
@@ -50,7 +58,18 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
   onDeleteGuest,
 }) => {
   const [selectedPresentIds, setSelectedPresentIds] = useState<string[]>(() => {
-    if (currentMatch && currentMatch.presentPlayerIds && currentMatch.presentPlayerIds.length > 0) {
+    if (currentMatch && currentMatch.status === 'em_andamento' && currentMatch.presentPlayerIds?.length) {
+      return currentMatch.presentPlayerIds;
+    }
+    const savedPresence = getStoredDraftPresence();
+    if (savedPresence && savedPresence.length > 0) {
+      return savedPresence;
+    }
+    const savedDraft = getStoredDraftMatch();
+    if (savedDraft?.presentPlayerIds?.length) {
+      return savedDraft.presentPlayerIds;
+    }
+    if (currentMatch?.presentPlayerIds?.length) {
       return currentMatch.presentPlayerIds;
     }
     // Padrão: pré-marcar todos os jogadores ativos locais
@@ -58,32 +77,77 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
   });
 
   const [draftMatch, setDraftMatch] = useState<Match | null>(() => {
-    if (currentMatch) return currentMatch;
+    if (currentMatch && currentMatch.status === 'em_andamento') {
+      return currentMatch;
+    }
+    const savedDraft = getStoredDraftMatch();
+    if (savedDraft && savedDraft.status === 'agendada') {
+      return savedDraft;
+    }
+    if (currentMatch && currentMatch.status === 'agendada') {
+      return currentMatch;
+    }
     return null;
   });
 
-  // Mantém draft sincronizado quando a rodada estiver em andamento (já iniciada)
+  useEffect(() => {
+    const available = new Set(players.filter(p => p.active !== false).map(p => p.id));
+    setSelectedPresentIds(ids => ids.filter(id => available.has(id)));
+  }, [players]);
+
+  // Mantém draft sincronizado quando a rodada estiver em andamento (já iniciada) ou limpa quando finalizada
   useEffect(() => {
     if (currentMatch && currentMatch.status === 'em_andamento') {
       setDraftMatch(currentMatch);
       if (currentMatch.presentPlayerIds) {
         setSelectedPresentIds(currentMatch.presentPlayerIds);
       }
+      clearStoredDraft();
+    } else if (!currentMatch || currentMatch.status === 'finalizada') {
+      // Se a partida oficial foi finalizada ou não existe mais partida em andamento, limpa o draft da tela
+      setDraftMatch((prev) => {
+        if (prev && (prev.status === 'em_andamento' || prev.status === 'finalizada')) {
+          clearStoredDraft();
+          return null;
+        }
+        return prev;
+      });
     }
   }, [currentMatch]);
+
+  // Persiste draft da partida no localStorage sempre que houver mudanças antes do início oficial
+  useEffect(() => {
+    if (currentMatch && currentMatch.status === 'em_andamento') {
+      clearStoredDraft();
+      return;
+    }
+    if (draftMatch && draftMatch.status === 'agendada') {
+      saveStoredDraftMatch(draftMatch);
+    }
+  }, [draftMatch, currentMatch?.status]);
+
+  // Persiste lista de presenças no localStorage para não perder seleção ao sair da aba
+  useEffect(() => {
+    if (currentMatch && currentMatch.status === 'em_andamento') return;
+    if (selectedPresentIds.length > 0) {
+      saveStoredDraftPresence(selectedPresentIds);
+    }
+  }, [selectedPresentIds, currentMatch?.status]);
 
   const [swapPlayerA, setSwapPlayerA] = useState<string | null>(null);
   const [isSwapping, setIsSwapping] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showAddGuestModal, setShowAddGuestModal] = useState(false);
   const [showShareTeamsModal, setShowShareTeamsModal] = useState(false);
+  const [finalizedSummaryModal, setFinalizedSummaryModal] = useState<Match | null>(null);
   const [guestNameInput, setGuestNameInput] = useState('');
 
-  const handleAddGuestSubmit = (e: React.FormEvent) => {
+  const handleAddGuestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!onAddGuest) return;
 
-    const newGuest = onAddGuest(guestNameInput);
+    const newGuest = await onAddGuest(guestNameInput);
+    if (!newGuest) return;
     setGuestNameInput('');
     setShowAddGuestModal(false);
 
@@ -111,19 +175,18 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
   };
 
   // Match ativo (em andamento) ou draft local
-  const activeMatch = currentMatch?.status === 'em_andamento' ? currentMatch : draftMatch;
+  const activeMatch = currentMatch?.status === 'em_andamento' ? currentMatch : session?.isAdmin ? draftMatch : currentMatch;
 
-  const handleGenerateTeams = () => {
-    const presentPlayers = players.filter((p) => selectedPresentIds.includes(p.id));
+  const handleGenerateTeams = async () => {
+    const presentPlayers = players.filter((p) => p.active !== false && selectedPresentIds.includes(p.id));
     if (presentPlayers.length < 2) {
       alert('Selecione pelo menos 2 jogadores presentes!');
       return;
     }
 
-    const { teamA, teamB } = generateBalancedTeams(presentPlayers, pastMatches, {
-      teamAColor: 'bg-blue-600',
-      teamBColor: 'bg-amber-600',
-    });
+    let teamA: Match['teamA'], teamB: Match['teamB'];
+    try { ({ teamA, teamB } = await apiRequest('/teams/generate', 'POST', { playerIds: presentPlayers.map(p => p.id) })); }
+    catch (e) { alert((e as Error).message); return; }
 
     const dateFormatted = new Date().toLocaleDateString('pt-BR', {
       day: '2-digit',
@@ -133,7 +196,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
 
     const newDraft: Match = {
       id: activeMatch ? activeMatch.id : `match_${Date.now()}`,
-      date: new Date().toISOString().split('T')[0],
+      date: localDate(),
       title: activeMatch?.title || `Rodada de Vôlei (${dateFormatted})`,
       status: 'agendada',
       teamA,
@@ -191,7 +254,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
   };
 
   // Ao clicar em COMEÇAR RODADA: vincula e persiste efetivamente no banco de dados
-  const handleStartRound = () => {
+  const handleStartRound = async () => {
     if (!activeMatch || !activeMatch.teamA || !activeMatch.teamB) {
       alert('Sorteie os times antes de começar a rodada!');
       return;
@@ -201,12 +264,13 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
       status: 'em_andamento',
       presentPlayerIds: selectedPresentIds,
     };
-    onUpdateMatch(startedMatch);
+    if (!await onUpdateMatch(startedMatch)) return;
+    clearStoredDraft();
     setDraftMatch(startedMatch);
     setIsSwapping(false);
   };
 
-  const handleFinalizeMatch = () => {
+  const handleFinalizeMatch = async () => {
     if (!activeMatch) return;
 
     const updatedMatch: Match = {
@@ -222,7 +286,10 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
       finalizedAt: new Date().toISOString(),
     };
 
-    onUpdateMatch(updatedMatch);
+    if (!await onUpdateMatch(updatedMatch)) return;
+    setFinalizedSummaryModal(updatedMatch);
+    setDraftMatch(null);
+    clearStoredDraft();
   };
 
   const handleConfirmDelete = () => {
@@ -230,30 +297,48 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
     setShowDeleteModal(true);
   };
 
+  const handleShareVoting = () => {
+    if (!finalizedSummaryModal) return;
+    const match = pastMatches.find(m => m.id === finalizedSummaryModal.id) || finalizedSummaryModal;
+    if (!votingOpen(match)) {
+      alert('O prazo de votação desta rodada já encerrou.');
+      return;
+    }
+
+    const deadline = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    }).format(new Date(votingDeadline(match)));
+    const message = [
+      '🏐 *Votação liberada!*',
+      '',
+      match.title || `Rodada de ${match.date.split('-').reverse().join('/')}`,
+      mvpVotingOpen(match) ? 'A rodada foi finalizada! Avalie o jogo e vote no Craque da Partida (MVP). 🌟' : 'Avalie o jogo e dê suas notas gerais! A votação de MVP já encerrou.',
+      mvpVotingOpen(match) ? `🌟 MVP: até ${new Date(mvpVotingDeadline(match)).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })} (24h após a finalização, limitado à virada da temporada).` : '',
+      '',
+      `⏰ Notas gerais: até ${deadline} (horário de Brasília).`,
+      'Acesse o app para votar:',
+      `${window.location.origin}/`,
+    ].join('\n');
+
+    window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+  };
+
   const getPlayer = (id: string) => players.find((p) => p.id === id);
 
   // Active match is any match that is agendada (draft local) or em_andamento (em jogo)
   const hasActiveMatch = !!activeMatch;
 
-  // Finalized matches from the last 24h (or the single most recent one if older)
+  // Finalized matches from the open voting window (or the single most recent one if older)
   const recentFinalizedMatches = React.useMemo(() => {
     const finalized = pastMatches.filter((m) => m.status === 'finalizada');
     if (finalized.length === 0) return [];
 
-    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
-    const now = Date.now();
+    const openVotings = finalized.filter(m => votingOpen(m));
 
-    const within24h = finalized.filter((m) => {
-      const finTime = m.finalizedAt
-        ? new Date(m.finalizedAt).getTime()
-        : m.createdAt
-        ? new Date(m.createdAt).getTime()
-        : new Date(m.date + 'T00:00:00').getTime();
-      return now - finTime < TWENTY_FOUR_HOURS_MS;
-    });
-
-    // If there are matches within 24h, return all of them; otherwise return the most recent one
-    return within24h.length > 0 ? within24h : [finalized[0]];
+    // If there are matches with open voting, return all of them; otherwise return the most recent one
+    return openVotings.length > 0 ? openVotings : [finalized[0]];
   }, [pastMatches]);
 
   return (
@@ -300,7 +385,8 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
       )}
 
       {/* 2. No Active Round View -> Render "Iniciar uma rodada de vôlei hoje" */}
-      {!hasActiveMatch && (
+      {!hasActiveMatch && !session?.isAdmin && <p className="p-5 bg-white rounded-2xl text-sm">Nenhuma rodada em andamento. Aguarde um administrador organizar os times.</p>}
+      {!hasActiveMatch && session?.isAdmin && (
         <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200/80 text-center space-y-4 my-2">
           <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto shadow-inner">
             <Volleyball className="w-9 h-9" />
@@ -321,7 +407,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
               });
               setDraftMatch({
                 id: `match_${Date.now()}`,
-                date: new Date().toISOString().split('T')[0],
+                date: localDate(),
                 title: `Rodada de Vôlei (${dateFormatted})`,
                 status: 'agendada',
                 teamA: { id: 'teamA', name: 'Time A', color: 'bg-blue-600', playerIds: [], setWins: 0 },
@@ -363,6 +449,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                   type="button"
                   onClick={handleConfirmDelete}
                   title="Excluir/Cancelar Rodada"
+                  disabled={!session?.isAdmin}
                   className="p-2.5 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 transition-all cursor-pointer"
                 >
                   <Trash2 className="w-5 h-5" />
@@ -375,7 +462,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
           </div>
 
           {/* Presence Selection ("Quem vai jogar hoje?") - Available while status is 'agendada' */}
-          {activeMatch.status === 'agendada' && (
+          {session?.isAdmin && activeMatch.status === 'agendada' && (
             <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-4">
               <div className="flex items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
                 <div>
@@ -488,7 +575,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                     <MessageCircle className="w-3.5 h-3.5 fill-white" />
                     <span>Compartilhar Times</span>
                   </button>
-                  {activeMatch.status === 'agendada' && (
+                  {session?.isAdmin && activeMatch.status === 'agendada' && (
                     <button
                       type="button"
                       onClick={() => setIsSwapping(!isSwapping)}
@@ -552,10 +639,10 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                             {activeMatch.teamA.playerIds.length} Jogadores
                           </p>
                         </div>
-                        <div className="bg-white/20 px-2.5 py-1 rounded-xl backdrop-blur-xs border border-white/25 shrink-0 text-xs sm:text-sm font-black text-white flex items-center gap-1">
+                        {session?.isAdmin && <div className="bg-white/20 px-2.5 py-1 rounded-xl backdrop-blur-xs border border-white/25 shrink-0 text-xs sm:text-sm font-black text-white flex items-center gap-1">
                           <span>{teamAAvg.toFixed(1)}</span>
                           <span className="text-amber-300">★</span>
-                        </div>
+                        </div>}
                       </div>
 
                       <div className="p-3 divide-y divide-slate-100">
@@ -592,10 +679,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                             {activeMatch.teamB.playerIds.length} Jogadores
                           </p>
                         </div>
-                        <div className="bg-white/20 px-2.5 py-1 rounded-xl backdrop-blur-xs border border-white/25 shrink-0 text-xs sm:text-sm font-black text-white flex items-center gap-1">
-                          <span>{teamBAvg.toFixed(1)}</span>
-                          <span className="text-amber-300">★</span>
-                        </div>
+                        {session?.isAdmin && <div className="bg-white/20 px-2.5 py-1 rounded-xl backdrop-blur-xs border border-white/25 shrink-0 text-xs sm:text-sm font-black text-white flex items-center gap-1"><span>{teamBAvg.toFixed(1)} ★</span></div>}
                       </div>
 
                       <div className="p-3 divide-y divide-slate-100">
@@ -637,14 +721,14 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
               </button>
 
               {/* Start Round CTA (if status is 'agendada') */}
-              {activeMatch.status === 'agendada' && (
+              {session?.isAdmin && activeMatch.status === 'agendada' && (
                 <div className="bg-slate-900 text-white rounded-3xl p-5 space-y-3 shadow-xl border border-slate-800">
                   <div className="flex items-center gap-2">
                     <Play className="w-5 h-5 text-emerald-400 fill-emerald-400" />
                     <h4 className="text-sm font-bold">Prontos para jogar?</h4>
                   </div>
                   <p className="text-xs text-slate-300 leading-relaxed">
-                    Clique em <strong>Começar Rodada</strong> para travar os sorteios e liberar a contagem do placar para qualquer jogador.
+                    Clique em <strong>Começar Rodada</strong> para travar os sorteios e registrar o placar.
                   </p>
                   <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
                     <button
@@ -668,7 +752,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
               )}
 
               {/* Finalize Score Controls (Unlocked when status is 'em_andamento') */}
-              {activeMatch.status === 'em_andamento' && (
+              {session?.isAdmin && activeMatch.status === 'em_andamento' && (
                 <div className="bg-slate-900 text-white rounded-3xl p-5 space-y-4 shadow-xl border border-slate-800">
                   <div>
                     <h4 className="text-sm font-bold flex items-center gap-2">
@@ -761,7 +845,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
             <div>
               <h3 className="text-base font-extrabold text-slate-900">Excluir e Cancelar Rodada?</h3>
               <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                Esta ação irá cancelar a rodada iniciada e remover os times montados. Todos no grupo poderão iniciar uma nova rodada quando quiserem.
+                Esta ação irá cancelar a rodada iniciada e remover os times montados. Um administrador poderá organizar uma nova rodada.
               </p>
             </div>
             <div className="flex gap-2 pt-2">
@@ -774,10 +858,11 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   if (activeMatch) {
-                    onDeleteMatch(activeMatch.id);
+                    if (currentMatch?.id === activeMatch.id && !await onDeleteMatch(activeMatch.id)) return;
                     setDraftMatch(null);
+                    clearStoredDraft();
                   }
                   setShowDeleteModal(false);
                 }}
@@ -858,6 +943,87 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
           players={players}
           onClose={() => setShowShareTeamsModal(false)}
         />
+      )}
+
+      {/* Modal de Conclusão / Celebração da Rodada Finalizada */}
+      {finalizedSummaryModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl border border-slate-100 space-y-5 text-center relative overflow-hidden">
+            <div className="w-16 h-16 bg-gradient-to-tr from-emerald-500 to-teal-600 text-white rounded-3xl flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/30">
+              <Trophy className="w-9 h-9" />
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="px-3 py-1 bg-emerald-100 text-emerald-800 text-[11px] font-extrabold uppercase tracking-widest rounded-full inline-block mb-1">
+                Rodada Concluída!
+              </span>
+              <h3 className="text-xl font-black text-slate-900">
+                Placar Final Registrado
+              </h3>
+              <p className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed">
+                Os resultados foram computados e a votação para <strong>Craque da Partida (MVP)</strong> já está liberada!
+              </p>
+            </div>
+
+            {/* Placar Card */}
+            <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 flex items-center justify-around shadow-inner">
+              <div className="text-center">
+                <span className="text-xs font-black text-slate-700 block truncate max-w-[110px]">
+                  {finalizedSummaryModal.teamA?.name || 'Time A'}
+                </span>
+                <span className="text-3xl font-black text-blue-600">
+                  {finalizedSummaryModal.finalScore?.teamASets ?? finalizedSummaryModal.teamA?.setWins ?? 0}
+                </span>
+                <span className="text-[10px] text-slate-400 block font-semibold">sets</span>
+              </div>
+
+              <div className="text-sm font-black text-slate-300">X</div>
+
+              <div className="text-center">
+                <span className="text-xs font-black text-slate-700 block truncate max-w-[110px]">
+                  {finalizedSummaryModal.teamB?.name || 'Time B'}
+                </span>
+                <span className="text-3xl font-black text-amber-600">
+                  {finalizedSummaryModal.finalScore?.teamBSets ?? finalizedSummaryModal.teamB?.setWins ?? 0}
+                </span>
+                <span className="text-[10px] text-slate-400 block font-semibold">sets</span>
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-2">
+              <button
+                type="button"
+                onClick={handleShareVoting}
+                className="w-full py-3.5 px-4 bg-green-600 hover:bg-green-500 text-white font-extrabold text-sm rounded-2xl shadow-lg shadow-green-600/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+              >
+                <MessageCircle className="w-5 h-5" aria-hidden="true" />
+                Avisar no WhatsApp: votação liberada
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setFinalizedSummaryModal(null);
+                  if (onNavigateToFeedback) {
+                    onNavigateToFeedback();
+                  }
+                }}
+                className="w-full py-3.5 px-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm rounded-2xl shadow-lg shadow-emerald-600/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+              >
+                <Star className="w-4 h-4 fill-white" />
+                Votar no Craque (MVP) Agora
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFinalizedSummaryModal(null)}
+                className="w-full py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-all cursor-pointer"
+              >
+                Ver Tela Inicial
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

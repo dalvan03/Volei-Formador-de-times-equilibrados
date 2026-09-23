@@ -6,8 +6,12 @@ export interface Player {
   phone: string;
   position?: Position;
   photoUrl?: string;
-  rating: number; // Dynamic average rating (1.0 to 5.0)
-  ratingCount: number; // Total star ratings received
+  rating?: number; // Internal calculation only; omitted from public and administrator responses
+  ratingCount?: number;
+  ratingWeight?: number;
+  setBalance?: number;
+  rank?: number;
+  medals?: { gold: number; silver: number; bronze: number };
   wins: number;
   losses: number;
   draws?: number;
@@ -36,11 +40,13 @@ export interface SetScore {
 export interface BalanceFeedback {
   id: string;
   matchId: string;
+  evaluatorPlayerId?: string;
   evaluatorPhone: string;
   wasBalanced: boolean;
   strongerTeam?: 'teamA' | 'teamB' | null;
   createdAt: string;
 }
+
 
 export interface PlayerRatingFeedback {
   id: string;
@@ -63,7 +69,10 @@ export interface Match {
   id: string;
   date: string; // YYYY-MM-DD
   title?: string;
-  status: 'agendada' | 'em_andamento' | 'finalizada';
+  status: 'agendada' | 'em_andamento' | 'finalizada' | 'encerrada';
+  seasonId?: string;
+  votingClosesAt?: string;
+  mvpResult?: { totalVotes: number; counts: Record<string, number>; voterIds: string[] };
   teamA: Team;
   teamB: Team;
   finalScore?: {
@@ -73,7 +82,7 @@ export interface Match {
   setScores?: SetScore[];
   presentPlayerIds: string[];
   createdAt: string;
-  finalizedAt?: string; // Timestamp ISO when match was finalized (marks start of 24h voting window)
+  finalizedAt?: string; // Timestamp ISO when match was finalized (marks start of the 96h voting window)
 }
 
 export interface UserSession {
@@ -81,4 +90,19 @@ export interface UserSession {
   player?: Player;
   isLoggedIn: boolean;
   isAdmin: boolean;
+}
+
+export type PublicPlayer = Omit<Player, 'rating' | 'ratingCount' | 'ratingWeight'>;
+export interface PrivateSeasonResult { seasonId: string; rating: number; votesReceived: number }
+export interface SeasonSummary { id: string; closed: boolean }
+export type LogCategory = 'partida' | 'atleta' | 'voto' | 'auth' | 'admin';
+
+export interface ActivityLog {
+  id: string;
+  userName: string;
+  userPhone?: string;
+  action: string;
+  description: string;
+  category: LogCategory;
+  createdAt: string;
 }

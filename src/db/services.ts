@@ -1,8 +1,5 @@
-import fs from 'fs';
-import path from 'path';
-import { db, client } from './index';
-import * as schema from './schema';
-import { eq } from 'drizzle-orm';
+import { client } from './index';
+
 
 export async function runMigrationAndCalculations() {
   console.log('🔄 Verificando banco de dados relacional (PostgreSQL + Drizzle)...');
@@ -51,11 +48,15 @@ export async function runMigrationAndCalculations() {
       CREATE TABLE IF NOT EXISTS balance_feedbacks (
         id TEXT PRIMARY KEY,
         match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+        evaluator_player_id TEXT REFERENCES players(id) ON DELETE CASCADE,
         evaluator_phone TEXT NOT NULL,
         was_balanced BOOLEAN NOT NULL,
         stronger_team TEXT,
         created_at TEXT NOT NULL
       );
+
+      ALTER TABLE balance_feedbacks ADD COLUMN IF NOT EXISTS evaluator_player_id TEXT REFERENCES players(id) ON DELETE CASCADE;
+
 
       CREATE TABLE IF NOT EXISTS rating_feedbacks (
         id TEXT PRIMARY KEY,
@@ -73,286 +74,127 @@ export async function runMigrationAndCalculations() {
         target_player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
         created_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS activity_logs (
+        id TEXT PRIMARY KEY,
+        user_name TEXT NOT NULL,
+        user_phone TEXT,
+        action TEXT NOT NULL,
+        description TEXT NOT NULL,
+        category TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      -- Limpeza de duplicatas históricas para viabilizar índices únicos
+      DELETE FROM balance_feedbacks a USING balance_feedbacks b
+      WHERE a.ctid < b.ctid AND a.match_id = b.match_id AND REGEXP_REPLACE(a.evaluator_phone, '\\D', '', 'g') = REGEXP_REPLACE(b.evaluator_phone, '\\D', '', 'g');
+
+      DELETE FROM rating_feedbacks a USING rating_feedbacks b
+      WHERE a.ctid < b.ctid AND a.match_id = b.match_id AND REGEXP_REPLACE(a.evaluator_phone, '\\D', '', 'g') = REGEXP_REPLACE(b.evaluator_phone, '\\D', '', 'g') AND a.target_player_id = b.target_player_id;
+
+      DELETE FROM mvp_votes a USING mvp_votes b
+      WHERE a.ctid < b.ctid AND a.match_id = b.match_id AND REGEXP_REPLACE(a.evaluator_phone, '\\D', '', 'g') = REGEXP_REPLACE(b.evaluator_phone, '\\D', '', 'g');
+
+      -- Garantir criação de constraints únicas formais para suporte perfeito ao ON CONFLICT do Drizzle ORM
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'balance_feedbacks_match_evaluator_key') THEN
+          ALTER TABLE balance_feedbacks ADD CONSTRAINT balance_feedbacks_match_evaluator_key UNIQUE (match_id, evaluator_phone);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'rating_feedbacks_match_evaluator_target_key') THEN
+          ALTER TABLE rating_feedbacks ADD CONSTRAINT rating_feedbacks_match_evaluator_target_key UNIQUE (match_id, evaluator_phone, target_player_id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'mvp_votes_match_evaluator_key') THEN
+          ALTER TABLE mvp_votes ADD CONSTRAINT mvp_votes_match_evaluator_key UNIQUE (match_id, evaluator_phone);
+        END IF;
+      EXCEPTION
+        WHEN OTHERS THEN
+          NULL;
+      END $$;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS balance_feedbacks_match_evaluator_idx ON balance_feedbacks (match_id, evaluator_phone);
+      CREATE UNIQUE INDEX IF NOT EXISTS rating_feedbacks_match_evaluator_target_idx ON rating_feedbacks (match_id, evaluator_phone, target_player_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS mvp_votes_match_evaluator_idx ON mvp_votes (match_id, evaluator_phone);
     `);
 
-    const existingPlayers = await db.select().from(schema.players);
-    const jsonDbPath = path.join(process.cwd(), 'data', 'db.json');
+    // 2. Auto-popular logs de auditoria retroativamente no banco se necessário
+    console.log('📝 Verificando/Atualizando logs de auditoria históricos...');
+    await client.unsafe(`
+      -- Cadastros de Atletas
+      INSERT INTO activity_logs (id, user_name, user_phone, action, description, category, created_at)
+      SELECT
+        'log_hist_p_' || id,
+        name,
+        phone,
+        'Cadastro de Atleta',
+        'Atleta ' || name || ' registrado no sistema.',
+        'atleta',
+        created_at::text
+      FROM players
+      ON CONFLICT (id) DO NOTHING;
 
-    if (existingPlayers.length === 0 && fs.existsSync(jsonDbPath)) {
-      console.log('📦 Migrando dados legados do db.json para o PostgreSQL relacional...');
-      const raw = fs.readFileSync(jsonDbPath, 'utf-8');
-      const data = JSON.parse(raw);
+      -- Criação de Partidas
+      INSERT INTO activity_logs (id, user_name, user_phone, action, description, category, created_at)
+      SELECT
+        'log_hist_m_' || id,
+        'Admin',
+        NULL,
+        'Criação de Partida',
+        'Partida ' || COALESCE(title, date) || ' (' || team_a_name || ' vs ' || team_b_name || ') criada/agendada.',
+        'partida',
+        created_at
+      FROM matches
+      ON CONFLICT (id) DO NOTHING;
 
-      // 1. Migrar Jogadores
-      if (Array.isArray(data.players)) {
-        for (const p of data.players) {
-          await db.insert(schema.players).values({
-            id: p.id,
-            name: p.name,
-            phone: p.phone || '',
-            position: p.position || null,
-            photoUrl: p.photoUrl || null,
-            avatarBg: p.avatarBg || 'bg-blue-600',
-            isAdmin: p.isAdmin || false,
-            active: p.active !== false,
-            isGuest: p.isGuest || false,
-          }).onConflictDoNothing();
-        }
-      }
+      -- Finalização de Partidas
+      INSERT INTO activity_logs (id, user_name, user_phone, action, description, category, created_at)
+      SELECT
+        'log_hist_mf_' || id,
+        'Admin',
+        NULL,
+        'Finalização de Partida',
+        'Partida ' || COALESCE(title, date) || ' finalizada com placar ' || COALESCE(final_score_a, 0) || ' x ' || COALESCE(final_score_b, 0) || '.',
+        'partida',
+        COALESCE(finalized_at, created_at)
+      FROM matches
+      WHERE status = 'finalizada'
+      ON CONFLICT (id) DO NOTHING;
 
-      // 2. Migrar Partidas e Seus Jogadores (matchPlayers)
-      if (Array.isArray(data.matches)) {
-        for (const m of data.matches) {
-          await db.insert(schema.matches).values({
-            id: m.id,
-            date: m.date,
-            title: m.title || null,
-            status: m.status,
-            teamAName: m.teamA?.name || 'Time A',
-            teamAColor: m.teamA?.color || 'bg-blue-600',
-            teamASetWins: m.teamA?.setWins ?? m.finalScore?.teamASets ?? 0,
-            teamBName: m.teamB?.name || 'Time B',
-            teamBColor: m.teamB?.color || 'bg-amber-600',
-            teamBSetWins: m.teamB?.setWins ?? m.finalScore?.teamBSets ?? 0,
-            finalScoreA: m.finalScore?.teamASets ?? null,
-            finalScoreB: m.finalScore?.teamBSets ?? null,
-            finalizedAt: m.finalizedAt || null,
-            createdAt: m.createdAt || new Date().toISOString(),
-          }).onConflictDoNothing();
+      -- Avaliações da Rodada (Equilíbrio + Notas dos colegas juntas em ação única)
+      INSERT INTO activity_logs (id, user_name, user_phone, action, description, category, created_at)
+      SELECT
+        'log_hist_bf_' || bf.id,
+        COALESCE(
+          (SELECT name FROM players WHERE id = bf.evaluator_player_id LIMIT 1),
+          (SELECT name FROM players WHERE REGEXP_REPLACE(phone, '\\D', '', 'g') = REGEXP_REPLACE(bf.evaluator_phone, '\\D', '', 'g') LIMIT 1),
+          'Atleta'
+        ),
+        bf.evaluator_phone,
+        'Avaliação da Rodada',
+        'Registrou avaliação da rodada (equilíbrio e notas dos colegas de time).',
+        'voto',
+        bf.created_at
+      FROM balance_feedbacks bf
+      ON CONFLICT (id) DO NOTHING;
 
-          // Inserir jogadores no relacionamento matchPlayers
-          const presentIds: string[] = m.presentPlayerIds || [];
-          const teamAIds: string[] = m.teamA?.playerIds || [];
-          const teamBIds: string[] = m.teamB?.playerIds || [];
-
-          const allMatchPlayers = Array.from(
-            new Set([...presentIds, ...teamAIds, ...teamBIds])
-          );
-
-          for (const pId of allMatchPlayers) {
-            // Verifica se o jogador existe no banco
-            const pExists = await db
-              .select()
-              .from(schema.players)
-              .where(eq(schema.players.id, pId));
-            if (pExists.length > 0) {
-              const team = teamAIds.includes(pId)
-                ? 'teamA'
-                : teamBIds.includes(pId)
-                ? 'teamB'
-                : null;
-              const isPresent = presentIds.includes(pId);
-
-              await db
-                .insert(schema.matchPlayers)
-                .values({
-                  matchId: m.id,
-                  playerId: pId,
-                  team,
-                  isPresent,
-                })
-                .onConflictDoNothing();
-            }
-          }
-        }
-      }
-
-      // 3. Migrar Feedbacks de Equilíbrio
-      if (Array.isArray(data.balanceFeedbacks)) {
-        for (const bf of data.balanceFeedbacks) {
-          await db.insert(schema.balanceFeedbacks).values({
-            id: bf.id,
-            matchId: bf.matchId,
-            evaluatorPhone: bf.evaluatorPhone,
-            wasBalanced: bf.wasBalanced,
-            strongerTeam: bf.strongerTeam || null,
-            createdAt: bf.createdAt || new Date().toISOString(),
-          }).onConflictDoNothing();
-        }
-      }
-
-      // 4. Migrar Feedbacks de Estrelas (Rating)
-      if (Array.isArray(data.ratingFeedbacks)) {
-        for (const rf of data.ratingFeedbacks) {
-          const targetExists = await db
-            .select()
-            .from(schema.players)
-            .where(eq(schema.players.id, rf.targetPlayerId));
-          if (targetExists.length > 0) {
-            await db.insert(schema.ratingFeedbacks).values({
-              id: rf.id,
-              matchId: rf.matchId,
-              evaluatorPhone: rf.evaluatorPhone,
-              targetPlayerId: rf.targetPlayerId,
-              rating: rf.rating,
-              createdAt: rf.createdAt || new Date().toISOString(),
-            }).onConflictDoNothing();
-          }
-        }
-      }
-
-      // 5. Migrar Votos no MVP (Craque)
-      if (Array.isArray(data.mvpVotes)) {
-        for (const mv of data.mvpVotes) {
-          const targetExists = await db
-            .select()
-            .from(schema.players)
-            .where(eq(schema.players.id, mv.targetPlayerId));
-          if (targetExists.length > 0) {
-            await db.insert(schema.mvpVotes).values({
-              id: mv.id,
-              matchId: mv.matchId,
-              evaluatorPhone: mv.evaluatorPhone,
-              targetPlayerId: mv.targetPlayerId,
-              createdAt: mv.createdAt || new Date().toISOString(),
-            }).onConflictDoNothing();
-          }
-        }
-      }
-
-      console.log('✅ Migração relacional do db.json para o PostgreSQL concluída com sucesso!');
-    }
+      -- Votos no Craque da Partida (MVP) - log separado
+      INSERT INTO activity_logs (id, user_name, user_phone, action, description, category, created_at)
+      SELECT
+        'log_hist_mv_' || mv.id,
+        COALESCE(
+          (SELECT name FROM players WHERE REGEXP_REPLACE(phone, '\\D', '', 'g') = REGEXP_REPLACE(mv.evaluator_phone, '\\D', '', 'g') LIMIT 1),
+          'Atleta'
+        ),
+        mv.evaluator_phone,
+        'Voto no Craque (MVP)',
+        'Registrou voto anônimo para Craque da Partida.',
+        'voto',
+        mv.created_at
+      FROM mvp_votes mv
+      ON CONFLICT (id) DO NOTHING;
+    `);
+    console.log('✅ Logs de auditoria históricos prontos no PostgreSQL!');
   } catch (err) {
-    console.warn('Alerta na migração de dados do Postgres:', err);
+    throw err;
   }
-}
-
-// RECÁLCULO DINÂMICO DE ESTATÍSTICAS (Derivado 100% dos relacionamentos no Postgres)
-export async function getAggregatedDataFromPostgres() {
-  const allPlayers = await db.select().from(schema.players);
-  const allMatches = await db.select().from(schema.matches);
-  const allMatchPlayers = await db.select().from(schema.matchPlayers);
-  const allRatingFeedbacks = await db.select().from(schema.ratingFeedbacks);
-  const allBalanceFeedbacks = await db.select().from(schema.balanceFeedbacks);
-  const allMvpVotes = await db.select().from(schema.mvpVotes);
-
-  // Reconstruir lista de partidas completas no formato esperado pelo Frontend
-  const formattedMatches = allMatches.map((m) => {
-    const mPlayers = allMatchPlayers.filter((mp) => mp.matchId === m.id);
-    const presentPlayerIds = mPlayers.filter((mp) => mp.isPresent).map((mp) => mp.playerId);
-    const teamAPlayerIds = mPlayers.filter((mp) => mp.team === 'teamA').map((mp) => mp.playerId);
-    const teamBPlayerIds = mPlayers.filter((mp) => mp.team === 'teamB').map((mp) => mp.playerId);
-
-    return {
-      id: m.id,
-      date: m.date,
-      title: m.title || undefined,
-      status: m.status as 'agendada' | 'em_andamento' | 'finalizada',
-      teamA: {
-        id: 'teamA' as const,
-        name: m.teamAName,
-        color: m.teamAColor,
-        playerIds: teamAPlayerIds,
-        setWins: m.teamASetWins,
-      },
-      teamB: {
-        id: 'teamB' as const,
-        name: m.teamBName,
-        color: m.teamBColor,
-        playerIds: teamBPlayerIds,
-        setWins: m.teamBSetWins,
-      },
-      finalScore:
-        m.finalScoreA !== null && m.finalScoreB !== null
-          ? { teamASets: m.finalScoreA, teamBSets: m.finalScoreB }
-          : undefined,
-      setScores: [],
-      presentPlayerIds,
-      createdAt: m.createdAt,
-      finalizedAt: m.finalizedAt || undefined,
-    };
-  });
-
-  // Finalized matches
-  const finalizedMatches = formattedMatches.filter((m) => m.status === 'finalizada');
-
-  // Recalcular estatísticas dos Jogadores dinamica e relacionalmente
-  const computedPlayers = allPlayers.map((p) => {
-    // 1. Recalcular Média de Estrelas (Rating)
-    const pRatings = allRatingFeedbacks.filter((rf) => rf.targetPlayerId === p.id);
-    let rating = 3.0;
-    let ratingCount = 0;
-    if (pRatings.length > 0) {
-      const sum = pRatings.reduce((acc, curr) => acc + curr.rating, 0);
-      rating = Number((sum / pRatings.length).toFixed(1));
-      ratingCount = pRatings.length;
-    }
-
-    // 2. Recalcular Vitórias / Derrotas / Empates / Partidas Jogadas
-    let wins = 0;
-    let losses = 0;
-    let draws = 0;
-    let matchesPlayed = 0;
-
-    finalizedMatches.forEach((m) => {
-      const inA = m.teamA.playerIds.includes(p.id);
-      const inB = m.teamB.playerIds.includes(p.id);
-
-      if (inA || inB) {
-        matchesPlayed += 1;
-        const setsA = m.finalScore?.teamASets ?? m.teamA.setWins ?? 0;
-        const setsB = m.finalScore?.teamBSets ?? m.teamB.setWins ?? 0;
-
-        if (setsA === setsB) {
-          draws += 1;
-        } else if ((inA && setsA > setsB) || (inB && setsB > setsA)) {
-          wins += 1;
-        } else {
-          losses += 1;
-        }
-      }
-    });
-
-    // 3. Recalcular Vitórias em Craque da Rodada (MVP)
-    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
-    const now = Date.now();
-    let mvpCount = 0;
-
-    finalizedMatches.forEach((m) => {
-      const finTime = m.finalizedAt
-        ? new Date(m.finalizedAt).getTime()
-        : new Date(m.createdAt).getTime();
-
-      // Janela encerrada
-      if (now - finTime >= TWENTY_FOUR_HOURS_MS) {
-        const mVotes = allMvpVotes.filter((v) => v.matchId === m.id);
-        const countMap: Record<string, number> = {};
-        mVotes.forEach((v) => {
-          countMap[v.targetPlayerId] = (countMap[v.targetPlayerId] || 0) + 1;
-        });
-
-        const maxVotes = Math.max(...Object.values(countMap), 0);
-        if (maxVotes > 0 && countMap[p.id] === maxVotes) {
-          mvpCount += 1;
-        }
-      }
-    });
-
-    return {
-      id: p.id,
-      name: p.name,
-      phone: p.phone,
-      position: (p.position as any) || undefined,
-      photoUrl: p.photoUrl || undefined,
-      rating,
-      ratingCount,
-      wins,
-      draws,
-      losses,
-      matchesPlayed,
-      avatarBg: p.avatarBg,
-      isAdmin: p.isAdmin,
-      active: p.active,
-      isGuest: p.isGuest,
-      mvpCount,
-    };
-  });
-
-  return {
-    players: computedPlayers,
-    matches: formattedMatches,
-    balanceFeedbacks: allBalanceFeedbacks,
-    ratingFeedbacks: allRatingFeedbacks,
-    mvpVotes: allMvpVotes,
-  };
 }

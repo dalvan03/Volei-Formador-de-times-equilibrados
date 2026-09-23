@@ -1,14 +1,16 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { User, Check, X, LogOut, Camera, Shield, Lock } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { User, Check, X, LogOut, Camera, Shield } from 'lucide-react';
 import { Player } from '../types';
 import { PhotoCapture } from './PhotoCapture';
+import { SeasonMedals } from './SeasonMedals';
+import { apiRequest } from '../utils/storage';
+import type { PrivateSeasonResult } from '../types';
 
 interface EditProfileModalProps {
   player: Player;
-  onSave: (updatedPlayer: Player) => void;
+  onSave: (updatedPlayer: Player) => Promise<boolean>;
   onLogout: () => void;
   onClose: () => void;
-  onOpenPlayerScores?: () => void;
 }
 
 export const EditProfileModal: React.FC<EditProfileModalProps> = ({
@@ -16,56 +18,17 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
   onSave,
   onLogout,
   onClose,
-  onOpenPlayerScores,
 }) => {
   const [name, setName] = useState(player.name || '');
   const [photoUrl, setPhotoUrl] = useState<string | undefined>(player.photoUrl);
   const [errorMsg, setErrorMsg] = useState('');
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [seasonResults, setSeasonResults] = useState<PrivateSeasonResult[]>([]);
+  const [resultError, setResultError] = useState('');
+  useEffect(() => { let active = true; apiRequest<PrivateSeasonResult[]>('/me/seasons').then(r => { if (active) setSeasonResults(r); }).catch(e => { if (active) setResultError(e.message); }); return () => { active = false; }; }, [player.id]);
 
-  const [holdProgress, setHoldProgress] = useState(0);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  const cancelHold = () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    timerRef.current = null;
-    intervalRef.current = null;
-    setHoldProgress(0);
-  };
-
-  const startHold = () => {
-    if (!player.isAdmin || !onOpenPlayerScores) return;
-    cancelHold();
-
-    const startTime = Date.now();
-    const duration = 5000; // 5 seconds
-
-    intervalRef.current = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      const pct = Math.min(100, (elapsed / duration) * 100);
-      setHoldProgress(pct);
-    }, 50);
-
-    timerRef.current = setTimeout(() => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      setHoldProgress(100);
-      if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
-        window.navigator.vibrate(200);
-      }
-      onOpenPlayerScores();
-      setHoldProgress(0);
-    }, duration);
-  };
-
-  useEffect(() => {
-    return () => {
-      cancelHold();
-    };
-  }, []);
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
       setErrorMsg('O nome não pode ficar em branco.');
@@ -78,7 +41,10 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
       photoUrl,
     };
 
-    onSave(updated);
+    setSaving(true);
+    const success = await onSave(updated);
+    setSaving(false);
+    if (!success) { setErrorMsg('Não foi possível salvar o perfil. Tente novamente.'); return; }
     setSavedSuccess(true);
     setTimeout(() => {
       onClose();
@@ -91,35 +57,8 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
         {/* Modal Header */}
         <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 p-5 text-white relative flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <div
-              onMouseDown={startHold}
-              onMouseUp={cancelHold}
-              onMouseLeave={cancelHold}
-              onTouchStart={startHold}
-              onTouchEnd={cancelHold}
-              onTouchCancel={cancelHold}
-              className={`relative w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 select-none ${
-                player.isAdmin ? 'cursor-pointer hover:bg-emerald-500/30 active:scale-95 transition-all' : ''
-              }`}
-              title={player.isAdmin ? 'Segure por 5 segundos para ver pontuações secretas' : undefined}
-            >
-              <User className="w-5 h-5 relative z-10" />
-              {player.isAdmin && holdProgress > 0 && (
-                <svg className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none">
-                  <circle
-                    cx="20"
-                    cy="20"
-                    r="17"
-                    stroke="currentColor"
-                    strokeWidth="3"
-                    className="text-amber-400"
-                    fill="transparent"
-                    strokeDasharray="106.8"
-                    strokeDashoffset={106.8 * (1 - holdProgress / 100)}
-                    strokeLinecap="round"
-                  />
-                </svg>
-              )}
+            <div className="relative w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400">
+              <User className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -130,14 +69,7 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
                   </span>
                 )}
               </div>
-              {player.isAdmin && holdProgress > 0 ? (
-                <p className="text-xs text-amber-300 font-bold animate-pulse flex items-center gap-1">
-                  <Lock className="w-3 h-3" />
-                  Segure para acessar... ({Math.max(1, Math.ceil((5000 - (holdProgress / 100 * 5000)) / 1000))}s)
-                </p>
-              ) : (
-                <p className="text-xs text-slate-300">Altere seu nome e foto de perfil</p>
-              )}
+              <p className="text-xs text-slate-300">Altere seu nome e foto de perfil</p>
             </div>
           </div>
 
@@ -190,6 +122,16 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
               )}
             </div>
 
+            <section className="rounded-2xl bg-slate-50 p-4 space-y-3">
+              <h3 className="font-bold">Conquistas</h3>
+              <SeasonMedals medals={player.medals} />
+              <h3 className="font-bold">Minhas temporadas • Privado</h3>
+              <p className="text-xs text-slate-500">Sua nota é revelada somente para você ao encerrar cada temporada. Nem administradores podem consultar notas de outros jogadores.</p>
+              {resultError && <p role="alert" className="text-rose-600 text-sm">{resultError}</p>}
+              {!seasonResults.length && !resultError && <p className="text-sm">Sua primeira nota aparecerá após o encerramento da temporada.</p>}
+              {seasonResults.map(r => <div key={r.seasonId} className="flex justify-between text-sm"><span>{r.seasonId.replace('-Q',' • T')}</span><span>★ {r.rating.toFixed(1)} · {r.votesReceived} votos recebidos</span></div>)}
+            </section>
+
             {/* Phone badge read-only info */}
             {player.phone && (
               <div className="px-3.5 py-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-center justify-between text-xs text-slate-500">
@@ -201,7 +143,7 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({
             {/* Save Button */}
             <button
               type="submit"
-              disabled={savedSuccess}
+              disabled={savedSuccess || saving}
               className={`w-full py-3.5 px-4 rounded-2xl font-black text-sm shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer ${
                 savedSuccess
                   ? 'bg-emerald-500 text-slate-950 shadow-emerald-500/20'

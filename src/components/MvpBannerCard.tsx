@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { Crown, Clock, Sparkles, Share2, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Crown, Clock, Sparkles, Share2, ChevronDown, Users } from 'lucide-react';
 import { Match, Player, UserSession } from '../types';
-import { getMatchMvpResult, MatchMvpResult, getStoredMvpVotes } from '../utils/storage';
+import { getMatchMvpResult, MatchMvpResult, getStoredMvpVotes, cleanPhone } from '../utils/storage';
 import { PlayerAvatar } from './PlayerAvatar';
+import { MvpWinners } from './MvpWinners';
 import { ShareMvpModal } from './ShareMvpModal';
 
 interface MvpBannerCardProps {
@@ -19,6 +20,7 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
   onNavigateToFeedback,
 }) => {
   const [showShareModal, setShowShareModal] = useState(false);
+  const [showVotersModal, setShowVotersModal] = useState(false);
   const [mvpResult, setMvpResult] = useState<MatchMvpResult | null>(null);
 
   // Recalculate MVP result dynamically every second for smooth countdown
@@ -37,7 +39,34 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
     updateResult();
     const timer = setInterval(updateResult, 1000);
     return () => clearInterval(timer);
-  }, [lastFinalizedMatch?.id, lastFinalizedMatch?.finalizedAt, players]);
+  }, [lastFinalizedMatch, players]);
+
+  // List of players who cast a vote in this match (without exposing who they voted for)
+  const votersList = useMemo(() => {
+    if (!lastFinalizedMatch) return [];
+    const uniqueEvaluators = (lastFinalizedMatch.mvpResult?.voterIds || []).map(id => cleanPhone(players.find(p => p.id === id)?.phone)).filter(Boolean) as string[];
+
+    return uniqueEvaluators
+      .map((voterPhone) => {
+        const found = players.find((p) => cleanPhone(p.phone) === voterPhone);
+        if (found) return { phone: voterPhone, player: found };
+        return {
+          phone: voterPhone,
+          player: {
+            id: `voter_${voterPhone}`,
+            name: 'Atleta',
+            phone: voterPhone,
+            rating: 3.0,
+            ratingCount: 0,
+            wins: 0,
+            losses: 0,
+            matchesPlayed: 0,
+            avatarBg: 'bg-slate-600',
+          } as Player,
+        };
+      })
+      .sort((a, b) => a.player.name.localeCompare(b.player.name, 'pt-BR'));
+  }, [lastFinalizedMatch?.id, players, mvpResult?.totalVotes]);
 
   if (!lastFinalizedMatch || !mvpResult) {
     return null;
@@ -48,16 +77,17 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
     return null;
   }
 
-  const userPhone = session?.phone || '';
+  const userPhone = cleanPhone(session?.phone);
   const allVotes = getStoredMvpVotes();
-  const userHasVoted = allVotes.some(
-    (v) => v.matchId === lastFinalizedMatch.id && v.evaluatorPhone === userPhone
-  );
+  const userHasVoted = (lastFinalizedMatch.mvpResult?.voterIds || []).includes(session?.player?.id || '');
 
   const top3 = mvpResult.top3;
   const winner = top3[0];
+  const tiedWinners = mvpResult.winners;
+  const hasTie = tiedWinners.length > 1;
   const second = top3[1];
   const third = top3[2];
+  const formatPercentage = (value: number) => value.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return (
     <>
@@ -65,7 +95,7 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
         {/* Glow effect */}
         <div className="absolute top-0 right-1/4 w-32 h-32 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
 
-        {/* STATE 1: Voting is OPEN (< 24 hours) -> Countdown & Vote Incentive without partials */}
+        {/* STATE 1: Voting is OPEN (before the deadline) -> Countdown & Vote Incentive without partials */}
         {mvpResult.isVotingOpen ? (
           <div className="p-4 sm:p-5 space-y-3.5">
             <div className="flex items-center justify-between gap-3">
@@ -97,7 +127,7 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
               </div>
             </div>
 
-            {/* Voting CTA or Voted Status */}
+            {/* Voting Status & Total Votes Counter */}
             <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-2xl flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0">
                 <Sparkles className="w-4.5 h-4.5 text-lime-400 shrink-0" />
@@ -108,28 +138,25 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
                     </span>
                   ) : (
                     <span>
-                      Quem foi o destaque? <strong className="text-white">Dê o seu voto!</strong>
+                      Votação em andamento • <strong className="text-white">Parcial oculta</strong>
                     </span>
                   )}
                 </p>
               </div>
 
-              {!userHasVoted && onNavigateToFeedback && (
-                <button
-                  type="button"
-                  onClick={onNavigateToFeedback}
-                  className="px-3.5 py-2 bg-lime-400 hover:bg-lime-300 text-slate-950 font-black text-xs sm:text-sm rounded-xl transition-all shadow-md shadow-lime-400/20 flex items-center gap-1.5 shrink-0 cursor-pointer active:scale-95"
-                >
-                  Votar <ChevronRight className="w-4 h-4" />
-                </button>
-              )}
+              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800/90 border border-slate-700/80 rounded-xl text-xs sm:text-sm font-black text-lime-400 shrink-0 shadow-xs">
+                <Users className="w-4 h-4 text-lime-400" />
+                <span>
+                  {mvpResult.totalVotes} {mvpResult.totalVotes === 1 ? 'voto' : 'votos'}
+                </span>
+              </div>
             </div>
           </div>
         ) : (
-          /* STATE 2: Voting is CLOSED (>= 24 hours) -> Broadcast TV Banner Podium with Percentages */
+          /* STATE 2: Voting is CLOSED (deadline reached) -> Broadcast TV Banner Podium with Percentages */
           <div className="space-y-0">
             {/* Header Strip Broadcast */}
-            <div className="p-3.5 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-b border-slate-800 flex items-center justify-between gap-3">
+            <div className="p-3.5 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 {/* Broadcast circular badge */}
                 <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full border-3 border-lime-400 bg-slate-950 text-lime-400 flex flex-col items-center justify-center font-black leading-none shadow-xl shadow-lime-500/20 shrink-0 transform -rotate-6">
@@ -138,7 +165,7 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
                 </div>
                 <div>
                   <span className="px-2.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 text-xs font-extrabold uppercase tracking-wider rounded-md inline-block mb-1">
-                    ELEITO PELA GALERA
+                    {hasTie ? 'CRAQUES DA PARTIDA' : 'ELEITO PELA GALERA'}
                   </span>
                   <h3 className="text-base sm:text-lg font-black text-white truncate max-w-[180px] sm:max-w-xs">
                     {lastFinalizedMatch.title || 'Última Rodada'}
@@ -156,6 +183,19 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
               </button>
             </div>
 
+            {hasTie ? (
+              <div className="bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 p-3.5">
+                <p className="mb-2 text-center text-xs font-bold text-amber-200">Empate em 1º lugar • {tiedWinners.length} craques eleitos</p>
+                <MvpWinners winners={tiedWinners} percentage={winner?.percentage || 0} />
+                {top3.filter(item => !item.isWinner).map(item => (
+                  <div key={item.player.id} className="mt-3 flex items-center justify-center gap-2 text-xs text-slate-300">
+                    <PlayerAvatar player={item.player} size="xs" />
+                    <span>{tiedWinners.length + 1}º lugar · {item.player.name} · {formatPercentage(item.percentage)}%</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+            <>
             {/* TV Podium (3 Columns: 2º Lugar Esquerda, 1º Lugar BEM MAIOR no Centro, 3º Lugar Direita) */}
             <div className="p-3.5 pt-4 grid grid-cols-3 gap-2.5 items-end bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950">
               {/* 2nd Place (Left) */}
@@ -179,7 +219,7 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
                     {second.player.name.split(' ')[0]}
                   </span>
                   <div className="mt-1 text-xs sm:text-sm font-black text-slate-100">
-                    {second.percentage}%
+                    {formatPercentage(second.percentage)}%
                   </div>
                   <span className="text-[7.5px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
                     2º Lugar
@@ -221,7 +261,7 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
                     {winner.player.name.split(' ')[0]}
                   </span>
                   <div className="mt-0.5 text-base sm:text-lg font-black text-lime-400 tracking-tight drop-shadow-md">
-                    {winner.percentage}%
+                    {formatPercentage(winner.percentage)}%
                   </div>
                   <span className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[8px] font-black text-amber-300 uppercase tracking-wider mt-1">
                     👑 CRAQUE
@@ -254,7 +294,7 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
                     {third.player.name.split(' ')[0]}
                   </span>
                   <div className="mt-1 text-xs sm:text-sm font-black text-slate-100">
-                    {third.percentage}%
+                    {formatPercentage(third.percentage)}%
                   </div>
                   <span className="text-[7.5px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">
                     3º Lugar
@@ -267,10 +307,62 @@ export const MvpBannerCard: React.FC<MvpBannerCardProps> = ({
               )}
             </div>
 
-            {/* Broadcast Footer Strip */}
-            <div className="bg-emerald-950 px-4 py-2 border-t border-emerald-900/60 flex items-center justify-between text-[10px] font-black text-emerald-300 uppercase tracking-wider">
-              <span>RESULTADO FINAL</span>
-              <span>CRAQUE DA PARTIDA</span>
+            </>
+            )}
+
+            {/* Broadcast Footer Strip (Clickable to view who voted) */}
+            <div className="bg-emerald-950/90 border-t border-emerald-900/60 transition-all">
+              <button
+                type="button"
+                onClick={() => setShowVotersModal(!showVotersModal)}
+                className="w-full px-4 py-2.5 flex items-center justify-between text-[11px] font-black text-emerald-300 hover:text-emerald-200 uppercase tracking-wider cursor-pointer active:bg-emerald-900/40 transition-colors group"
+              >
+                <div className="flex items-center gap-1.5">
+                  <span>RESULTADO FINAL</span>
+                  <span className="text-[10px] font-bold text-emerald-400/80 lowercase tracking-normal group-hover:text-emerald-300">
+                    ({votersList.length} {votersList.length === 1 ? 'voto' : 'votos'} • ver quem votou)
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[9px] text-emerald-400/70 group-hover:text-emerald-300">
+                    {showVotersModal ? 'ocultar' : 'detalhes'}
+                  </span>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 transition-transform duration-200 ${showVotersModal ? 'rotate-180 text-emerald-300' : 'text-emerald-400'
+                      }`}
+                  />
+                </div>
+              </button>
+
+              {/* Expansível: Lista de quem votou (sem exibir o voto individual) */}
+              {showVotersModal && (
+                <div className="px-4 pb-3.5 pt-1 border-t border-emerald-900/40 bg-slate-950/70 animate-fade-in space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1">
+                      <Users className="w-3 h-3 text-emerald-400" />
+                      Atletas que votaram:
+                    </span>
+                  </div>
+
+                  {votersList.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 pt-0.5">
+                      {votersList.map((voter, idx) => (
+                        <div
+                          key={voter.phone + '_' + idx}
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-900 border border-emerald-500/30 shadow-xs"
+                        >
+                          <PlayerAvatar player={voter.player} size="xs" />
+                          <span className="text-xs font-bold text-slate-200">
+                            {voter.player.name}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 py-1">Nenhum voto registrado.</p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}

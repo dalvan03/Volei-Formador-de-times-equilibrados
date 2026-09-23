@@ -1,436 +1,87 @@
-import { Player, Match, BalanceFeedback, PlayerRatingFeedback, MvpVoteFeedback, UserSession } from '../types';
-import { INITIAL_PLAYERS, INITIAL_MATCHES } from '../data/initialData';
+import type { Player, Match, BalanceFeedback, PlayerRatingFeedback, MvpVoteFeedback, UserSession, ActivityLog, LogCategory } from '../types';
+import { localDate, seasonForDate, mvpVotingDeadline, mvpVotingOpen } from './seasons';
 
-const KEYS = {
-  PLAYERS: 'volei_app_players_v1',
-  MATCHES: 'volei_app_matches_v1',
-  BALANCE_FEEDBACKS: 'volei_app_balance_feedbacks_v1',
-  RATING_FEEDBACKS: 'volei_app_rating_feedbacks_v1',
-  MVP_VOTES: 'volei_app_mvp_votes_v1',
-  SESSION: 'volei_app_session_v1',
-};
-
-export function getStoredPlayers(): Player[] {
-  try {
-    const data = localStorage.getItem(KEYS.PLAYERS);
-    return data ? JSON.parse(data) : INITIAL_PLAYERS;
-  } catch {
-    return INITIAL_PLAYERS;
+// Private server data lives only in memory, never in a shared browser cache.
+let state: { players: Player[]; matches: Match[]; balanceFeedbacks: BalanceFeedback[]; session: UserSession | null; seasonId?: string } = { players: [], matches: [], balanceFeedbacks: [], session: null };
+let logs: ActivityLog[] = [];
+let generation = 0;
+export function clearClientState() {
+  generation++;
+  state = { players: [], matches: [], balanceFeedbacks: [], session: null };
+  logs = [];
+  for (const key of Object.keys(localStorage)) if (key.startsWith('volei_app_') || key === 'volley_session') localStorage.removeItem(key);
+}
+// Invalidate legacy authentication and private caches on every application load.
+if (typeof localStorage !== 'undefined') {
+  for (const key of Object.keys(localStorage)) if (key.startsWith('volei_app_') && !key.includes('local_draft') || key === 'volley_session') localStorage.removeItem(key);
+}
+export async function apiRequest<T = any>(url: string, method = 'GET', body?: unknown): Promise<T> {
+  const res = await fetch(`/api${url}`, { method, credentials: 'same-origin', headers: method === 'GET' ? {} : { 'Content-Type': 'application/json' }, body: method === 'GET' || method === 'DELETE' ? undefined : JSON.stringify(body ?? {}) });
+  const json = await res.json();
+  if (!res.ok) {
+    if (res.status === 401 && !url.startsWith('/auth/')) { clearClientState(); window.dispatchEvent(new Event('session-expired')); }
+    throw new Error(json.error || 'Não foi possível concluir a operação');
   }
+  return json.data;
 }
-
-export function savePlayers(players: Player[]): void {
+export const cleanPhone = (phone?: string | null) => (phone || '').replace(/\D/g, '');
+export const getStoredPlayers = () => state.players;
+export const getStoredMatches = () => state.matches;
+export const getStoredBalanceFeedbacks = () => state.balanceFeedbacks;
+export const getStoredRatingFeedbacks = (): PlayerRatingFeedback[] => [];
+export const getStoredMvpVotes = (): MvpVoteFeedback[] => [];
+export const getStoredActivityLogs = () => logs;
+export const getStoredSession = () => state.session;
+export async function fetchDbFromServer(_retries = 0) {
+  const started = generation;
+  const data = await apiRequest<typeof state>('/db');
+  if (started !== generation) return null;
+  state = data;
+  return data;
+}
+export async function fetchLogsFromServer() { logs = await apiRequest<ActivityLog[]>('/logs'); return logs; }
+export function logActivity(params: { userName: string; userPhone?: string; action: string; description: string; category: LogCategory }): ActivityLog {
+  const log = { ...params, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
+  void apiRequest('/logs', 'POST', log).catch(() => {});
+  return log;
+}
+const DRAFT = 'volei_app_local_draft_match_v2', PRESENCE = 'volei_app_local_draft_presence_v2';
+export function getStoredDraftMatch(): Match | null {
   try {
-    localStorage.setItem(KEYS.PLAYERS, JSON.stringify(players));
-    syncDbToServer();
-  } catch (e) {
-    console.error('Error saving players', e);
-  }
-}
-
-export function getStoredMatches(): Match[] {
-  try {
-    const data = localStorage.getItem(KEYS.MATCHES);
-    return data ? JSON.parse(data) : INITIAL_MATCHES;
-  } catch {
-    return INITIAL_MATCHES;
-  }
-}
-
-export function saveMatches(matches: Match[]): void {
-  try {
-    localStorage.setItem(KEYS.MATCHES, JSON.stringify(matches));
-    syncDbToServer();
-  } catch (e) {
-    console.error('Error saving matches', e);
-  }
-}
-
-export function getStoredBalanceFeedbacks(): BalanceFeedback[] {
-  try {
-    const data = localStorage.getItem(KEYS.BALANCE_FEEDBACKS);
-    return data ? JSON.parse(data) : [];
-  } catch {
-    return [];
-  }
-}
-
-export function saveBalanceFeedback(feedback: BalanceFeedback): void {
-  const current = getStoredBalanceFeedbacks();
-  const filtered = current.filter(
-    (f) => !(f.matchId === feedback.matchId && f.evaluatorPhone === feedback.evaluatorPhone)
-  );
-  filtered.push(feedback);
-  localStorage.setItem(KEYS.BALANCE_FEEDBACKS, JSON.stringify(filtered));
-  syncDbToServer();
-}
-
-export function getStoredRatingFeedbacks(): PlayerRatingFeedback[] {
-  try {
-    const data = localStorage.getItem(KEYS.RATING_FEEDBACKS);
-    return data ? JSON.parse(data) : [];
-  } catch {
-    return [];
-  }
-}
-
-export function savePlayerRatingFeedbacks(
-  matchId: string,
-  evaluatorPhone: string,
-  ratings: { targetPlayerId: string; rating: number }[]
-): void {
-  const currentFeedbacks = getStoredRatingFeedbacks();
-  
-  const updatedFeedbacks = currentFeedbacks.filter(
-    (rf) => !(rf.matchId === matchId && rf.evaluatorPhone === evaluatorPhone)
-  );
-
-  const newFeedbacks: PlayerRatingFeedback[] = ratings.map((r) => ({
-    id: `rf_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    matchId,
-    evaluatorPhone,
-    targetPlayerId: r.targetPlayerId,
-    rating: r.rating,
-    createdAt: new Date().toISOString(),
-  }));
-
-  const allFeedbacks = [...updatedFeedbacks, ...newFeedbacks];
-  localStorage.setItem(KEYS.RATING_FEEDBACKS, JSON.stringify(allFeedbacks));
-
-  recalculateAllPlayerRatings();
-  syncDbToServer();
-}
-
-export function getStoredMvpVotes(): MvpVoteFeedback[] {
-  try {
-    const data = localStorage.getItem(KEYS.MVP_VOTES);
-    return data ? JSON.parse(data) : [];
-  } catch {
-    return [];
-  }
-}
-
-export function saveMvpVote(matchId: string, evaluatorPhone: string, targetPlayerId: string): void {
-  const current = getStoredMvpVotes();
-  const filtered = current.filter(
-    (v) => !(v.matchId === matchId && v.evaluatorPhone === evaluatorPhone)
-  );
-
-  const newVote: MvpVoteFeedback = {
-    id: `mvp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    matchId,
-    evaluatorPhone,
-    targetPlayerId,
-    createdAt: new Date().toISOString(),
-  };
-
-  filtered.push(newVote);
-  localStorage.setItem(KEYS.MVP_VOTES, JSON.stringify(filtered));
-
-  recalculatePlayerMvpCounts();
-  syncDbToServer();
-}
-
-export function deleteFeedbacksForMatch(matchId: string): void {
-  const balanceFeedbacks = getStoredBalanceFeedbacks();
-  const updatedBalance = balanceFeedbacks.filter((f) => f.matchId !== matchId);
-  localStorage.setItem(KEYS.BALANCE_FEEDBACKS, JSON.stringify(updatedBalance));
-
-  const ratingFeedbacks = getStoredRatingFeedbacks();
-  const updatedRating = ratingFeedbacks.filter((rf) => rf.matchId !== matchId);
-  localStorage.setItem(KEYS.RATING_FEEDBACKS, JSON.stringify(updatedRating));
-
-  const mvpVotes = getStoredMvpVotes();
-  const updatedMvp = mvpVotes.filter((v) => v.matchId !== matchId);
-  localStorage.setItem(KEYS.MVP_VOTES, JSON.stringify(updatedMvp));
-
-  recalculatePlayerMvpCounts();
-  syncDbToServer();
-}
-
-export interface MvpTopItem {
-  player: Player;
-  voteCount: number;
-  percentage: number;
-  isWinner: boolean;
-}
-
-export interface MatchMvpResult {
-  isVotingOpen: boolean;
-  timeLeftMs: number;
-  formattedTimeLeft: string;
-  totalVotes: number;
-  top3: MvpTopItem[];
-  winners: Player[];
-}
-
-export function getMatchMvpResult(
-  match: Match,
-  players: Player[],
-  optionalVotes?: MvpVoteFeedback[]
-): MatchMvpResult {
-  const allVotes = optionalVotes || getStoredMvpVotes();
-  const matchVotes = allVotes.filter((v) => v.matchId === match.id);
-  const totalVotes = matchVotes.length;
-
-  const finalizedTime = match.finalizedAt
-    ? new Date(match.finalizedAt).getTime()
-    : match.createdAt
-    ? new Date(match.createdAt).getTime()
-    : new Date(match.date + 'T00:00:00').getTime();
-
-  const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  const elapsed = now - finalizedTime;
-  const isVotingOpen = match.status === 'finalizada' && elapsed < TWENTY_FOUR_HOURS_MS;
-  const timeLeftMs = Math.max(0, TWENTY_FOUR_HOURS_MS - elapsed);
-
-  const hours = Math.floor(timeLeftMs / (1000 * 60 * 60));
-  const minutes = Math.floor((timeLeftMs % (1000 * 60 * 60)) / (1000 * 60));
-  const formattedTimeLeft = `${hours}h ${minutes.toString().padStart(2, '0')}m`;
-
-  // Aggregate votes per player
-  const countMap: Record<string, number> = {};
-  matchVotes.forEach((v) => {
-    countMap[v.targetPlayerId] = (countMap[v.targetPlayerId] || 0) + 1;
-  });
-
-  // Get all players involved in the match
-  const matchPlayerIds = [
-    ...(match.teamA?.playerIds || []),
-    ...(match.teamB?.playerIds || []),
-  ];
-  const uniquePlayerIds = Array.from(new Set(matchPlayerIds));
-
-  const sortedList: { player: Player; voteCount: number; percentage: number }[] = uniquePlayerIds
-    .map((pId) => {
-      const p: Player = players.find((item) => item.id === pId) || {
-        id: pId,
-        name: 'Atleta',
-        phone: '',
-        rating: 3.0,
-        ratingCount: 0,
-        wins: 0,
-        losses: 0,
-        matchesPlayed: 0,
-        avatarBg: 'bg-slate-600',
-      };
-      const voteCount = countMap[pId] || 0;
-      const percentage = totalVotes > 0 ? (voteCount / totalVotes) * 100 : 0;
-      return { player: p, voteCount, percentage };
-    })
-    .sort((a, b) => {
-      if (b.voteCount !== a.voteCount) return b.voteCount - a.voteCount;
-      return (b.player.rating || 3.0) - (a.player.rating || 3.0);
-    });
-
-  const maxVotes = sortedList.length > 0 && totalVotes > 0 ? sortedList[0].voteCount : 0;
-  const winners = maxVotes > 0 ? sortedList.filter((item) => item.voteCount === maxVotes).map((i) => i.player) : [];
-
-  const top3: MvpTopItem[] = sortedList.slice(0, 3).map((item, idx) => ({
-    player: item.player,
-    voteCount: item.voteCount,
-    percentage: Number(item.percentage.toFixed(1)),
-    isWinner: maxVotes > 0 && item.voteCount === maxVotes,
-  }));
-
-  return {
-    isVotingOpen,
-    timeLeftMs,
-    formattedTimeLeft,
-    totalVotes,
-    top3,
-    winners,
-  };
-}
-
-export function recalculatePlayerMvpCounts(
-  currentPlayers?: Player[],
-  currentMatches?: Match[]
-): Player[] {
-  const players = currentPlayers || getStoredPlayers();
-  const matches = currentMatches || getStoredMatches();
-  const allVotes = getStoredMvpVotes();
-
-  const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
-  const now = Date.now();
-
-  // Completed matches where voting window has expired
-  const closedMatches = matches.filter((m) => {
-    if (m.status !== 'finalizada') return false;
-    const finTime = m.finalizedAt
-      ? new Date(m.finalizedAt).getTime()
-      : m.createdAt
-      ? new Date(m.createdAt).getTime()
-      : new Date(m.date + 'T00:00:00').getTime();
-    return now - finTime >= TWENTY_FOUR_HOURS_MS;
-  });
-
-  const mvpCounter: Record<string, number> = {};
-
-  closedMatches.forEach((m) => {
-    const result = getMatchMvpResult(m, players, allVotes);
-    if (!result.isVotingOpen && result.totalVotes > 0) {
-      result.winners.forEach((winner) => {
-        mvpCounter[winner.id] = (mvpCounter[winner.id] || 0) + 1;
-      });
-    }
-  });
-
-  const updatedPlayers = players.map((p) => ({
-    ...p,
-    mvpCount: mvpCounter[p.id] || 0,
-  }));
-
-  try {
-    localStorage.setItem(KEYS.PLAYERS, JSON.stringify(updatedPlayers));
-    syncDbToServer();
+    const draft = JSON.parse(localStorage.getItem(DRAFT) || 'null');
+    if (draft && seasonForDate(draft.date) === seasonForDate(localDate())) return draft;
   } catch {}
-
-  return updatedPlayers;
+  clearStoredDraft(); return null;
 }
-
-export function recalculateAllPlayerRatings(): Player[] {
-  const players = getStoredPlayers();
-  const allRatings = getStoredRatingFeedbacks();
-
-  const updatedPlayers = players.map((player) => {
-    const receivedRatings = allRatings.filter((r) => r.targetPlayerId === player.id);
-    if (receivedRatings.length === 0) {
-      return {
-        ...player,
-        rating: player.ratingCount && player.ratingCount > 0 ? player.rating : 3.0,
-        ratingCount: player.ratingCount && player.ratingCount > 0 ? player.ratingCount : 0,
-      };
-    }
-
-    const sum = receivedRatings.reduce((acc, curr) => acc + curr.rating, 0);
-    const avg = sum / receivedRatings.length;
-
-    return {
-      ...player,
-      rating: Number(avg.toFixed(1)),
-      ratingCount: receivedRatings.length,
-    };
-  });
-
+export function getStoredDraftPresence(): string[] | null {
   try {
-    localStorage.setItem(KEYS.PLAYERS, JSON.stringify(updatedPlayers));
-  } catch {}
-  return updatedPlayers;
+    const saved = JSON.parse(localStorage.getItem(PRESENCE) || 'null');
+    return saved?.seasonId === seasonForDate(localDate()) ? saved.ids : null;
+  } catch { return null; }
 }
-
-export function getStoredSession(): UserSession | null {
+export function saveStoredDraftMatch(m: Match | null) { if (m) localStorage.setItem(DRAFT, JSON.stringify(m)); else localStorage.removeItem(DRAFT); }
+export function saveStoredDraftPresence(ids: string[] | null) { if (ids) localStorage.setItem(PRESENCE, JSON.stringify({ seasonId: seasonForDate(localDate()), ids })); else localStorage.removeItem(PRESENCE); }
+export function clearStoredDraft() { localStorage.removeItem(DRAFT); localStorage.removeItem(PRESENCE); }
+export interface SubmitFeedbackPayload {
+  matchId: string; evaluatorPhone: string; evaluatorPlayerId?: string;
+  balanceFeedback?: { wasBalanced: boolean; strongerTeam?: 'teamA' | 'teamB' | null };
+  ratingFeedbacks?: { targetPlayerId: string; rating: number }[];
+  mvpVote?: { targetPlayerId: string };
+  activityLogs?: unknown[];
+}
+export async function submitFeedbackToServer(payload: SubmitFeedbackPayload) {
   try {
-    const data = localStorage.getItem(KEYS.SESSION);
-    return data ? JSON.parse(data) : null;
-  } catch {
-    return null;
-  }
+    await apiRequest('/feedback', 'POST', payload);
+    await fetchDbFromServer();
+    return { success: true };
+  } catch (err) { return { success: false, error: (err as Error).message }; }
 }
-
-export function saveSession(session: UserSession | null): void {
-  if (session) {
-    localStorage.setItem(KEYS.SESSION, JSON.stringify(session));
-  } else {
-    localStorage.removeItem(KEYS.SESSION);
-  }
-}
-
-export function resetAllData(): void {
-  localStorage.removeItem(KEYS.PLAYERS);
-  localStorage.removeItem(KEYS.MATCHES);
-  localStorage.removeItem(KEYS.BALANCE_FEEDBACKS);
-  localStorage.removeItem(KEYS.RATING_FEEDBACKS);
-  localStorage.removeItem(KEYS.MVP_VOTES);
-  localStorage.removeItem(KEYS.SESSION);
-
-  fetch('/api/reset', { method: 'POST' }).catch(() => {});
-}
-
-// SERVER BACKEND DB SYNC
-export async function syncDbToServer(): Promise<void> {
-  try {
-    const payload = {
-      players: getStoredPlayers(),
-      matches: getStoredMatches(),
-      balanceFeedbacks: getStoredBalanceFeedbacks(),
-      ratingFeedbacks: getStoredRatingFeedbacks(),
-      mvpVotes: getStoredMvpVotes(),
-    };
-    await fetch('/api/db', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch (err) {
-    console.warn('Unable to sync database to local server:', err);
-  }
-}
-
-export async function fetchDbFromServer(retries = 1): Promise<{
-  players: Player[];
-  matches: Match[];
-  balanceFeedbacks: BalanceFeedback[];
-  ratingFeedbacks: PlayerRatingFeedback[];
-  mvpVotes: MvpVoteFeedback[];
-} | null> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch('/api/db');
-      if (!res.ok) {
-        if (attempt < retries) {
-          await new Promise((r) => setTimeout(r, 400));
-          continue;
-        }
-        return null;
-      }
-      const json = await res.json();
-      if (json && json.success) {
-        if (!json.data) {
-          // Initial server seed
-          await syncDbToServer();
-          return {
-            players: getStoredPlayers(),
-            matches: getStoredMatches(),
-            balanceFeedbacks: getStoredBalanceFeedbacks(),
-            ratingFeedbacks: getStoredRatingFeedbacks(),
-            mvpVotes: getStoredMvpVotes(),
-          };
-        }
-
-        const { players, matches, balanceFeedbacks, ratingFeedbacks, mvpVotes } = json.data;
-        if (Array.isArray(players)) {
-          localStorage.setItem(KEYS.PLAYERS, JSON.stringify(players));
-        }
-        if (Array.isArray(matches)) {
-          localStorage.setItem(KEYS.MATCHES, JSON.stringify(matches));
-        }
-        if (Array.isArray(balanceFeedbacks)) {
-          localStorage.setItem(KEYS.BALANCE_FEEDBACKS, JSON.stringify(balanceFeedbacks));
-        }
-        if (Array.isArray(ratingFeedbacks)) {
-          localStorage.setItem(KEYS.RATING_FEEDBACKS, JSON.stringify(ratingFeedbacks));
-        }
-        if (Array.isArray(mvpVotes)) {
-          localStorage.setItem(KEYS.MVP_VOTES, JSON.stringify(mvpVotes));
-        }
-
-        return {
-          players: players || getStoredPlayers(),
-          matches: matches || getStoredMatches(),
-          balanceFeedbacks: balanceFeedbacks || getStoredBalanceFeedbacks(),
-          ratingFeedbacks: ratingFeedbacks || getStoredRatingFeedbacks(),
-          mvpVotes: mvpVotes || getStoredMvpVotes(),
-        };
-      }
-    } catch (err) {
-      if (attempt < retries) {
-        await new Promise((r) => setTimeout(r, 400));
-        continue;
-      }
-      console.warn('Unable to fetch database from local server, fallback to client state:', err);
-    }
-  }
-  return null;
+export interface MvpTopItem { player: Player; voteCount: number; percentage: number; isWinner: boolean }
+export interface MatchMvpResult { isVotingOpen: boolean; timeLeftMs: number; formattedTimeLeft: string; totalVotes: number; top3: MvpTopItem[]; winners: Player[] }
+export function getMatchMvpResult(match: Match, players: Player[], _optionalVotes?: MvpVoteFeedback[]): MatchMvpResult {
+  const open = mvpVotingOpen(match), timeLeftMs = open ? Math.max(0, mvpVotingDeadline(match) - Date.now()) : 0;
+  const result = match.mvpResult || { totalVotes: 0, counts: {}, voterIds: [] };
+  const max = Math.max(0, ...Object.values(result.counts));
+  const items = Object.entries(result.counts).map(([id, voteCount]) => ({ player: players.find(p => p.id === id), voteCount, percentage: result.totalVotes ? voteCount / result.totalVotes * 100 : 0, isWinner: voteCount === max })).filter(x => x.player).sort((a,b) => b.voteCount-a.voteCount || a.player!.name.localeCompare(b.player!.name)) as MvpTopItem[];
+  return { isVotingOpen: open, timeLeftMs, formattedTimeLeft: `${Math.floor(timeLeftMs/3600000)}h ${String(Math.floor(timeLeftMs%3600000/60000)).padStart(2,'0')}m`, totalVotes: result.totalVotes, top3: open ? [] : items.slice(0,3), winners: open ? [] : items.filter(x => x.isWinner).map(x => x.player) };
 }

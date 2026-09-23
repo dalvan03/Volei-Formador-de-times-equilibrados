@@ -1,13 +1,32 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { apiRequest } from '../utils/storage';
+import { compareRanking } from '../utils/seasons';
+import { SeasonMedals } from './SeasonMedals';
+import type { SeasonSummary } from '../types';
 import { Trophy, Filter, Medal, Crown } from 'lucide-react';
 import { Player } from '../types';
 import { PlayerAvatar } from './PlayerAvatar';
 
 interface RankingTabProps {
   players: Player[];
+  seasonId: string;
 }
 
-export const RankingTab: React.FC<RankingTabProps> = ({ players }) => {
+export const RankingTab: React.FC<RankingTabProps> = ({ players: currentPlayers, seasonId }) => {
+  const [selected, setSelected] = useState(seasonId);
+  const [seasons, setSeasons] = useState<SeasonSummary[]>([]);
+  const [archive, setArchive] = useState<Player[]>([]);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  useEffect(() => { setSelected(seasonId); apiRequest<SeasonSummary[]>('/seasons').then(setSeasons).catch(e => setError(e.message)); }, [seasonId]);
+  useEffect(() => {
+    let active = true;
+    if (selected === seasonId) { setLoading(false); return; }
+    setLoading(true); setError(''); setArchive([]);
+    apiRequest<Player[]>(`/seasons/${selected}/ranking`).then(p => { if (active) setArchive(p); }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [selected, seasonId]);
+  const players = (selected === seasonId ? currentPlayers : archive).filter(p => !p.isGuest);
   const [sortBy, setSortBy] = useState<'points' | 'wins' | 'matches' | 'mvp'>('points');
 
   const getPoints = (p: Player) => p.wins * 3 + (p.draws || 0) * 1;
@@ -20,9 +39,7 @@ export const RankingTab: React.FC<RankingTabProps> = ({ players }) => {
       return getPoints(b) - getPoints(a);
     }
     if (sortBy === 'points') {
-      const diffPoints = getPoints(b) - getPoints(a);
-      if (diffPoints !== 0) return diffPoints;
-      return b.wins - a.wins;
+      return (a.rank ?? Infinity) - (b.rank ?? Infinity) || compareRanking(a, b);
     }
     if (sortBy === 'wins') {
       const diffWins = b.wins - a.wins;
@@ -36,6 +53,13 @@ export const RankingTab: React.FC<RankingTabProps> = ({ players }) => {
 
   return (
     <div className="space-y-5 pb-24 animate-fade-in">
+      <label className="block text-sm font-bold">Temporada
+        <select className="ml-2 rounded-xl p-2 border bg-white" value={selected} onChange={e => setSelected(e.target.value)}>
+          {(seasons.length ? seasons : [{id:seasonId,closed:false}]).map(s => <option key={s.id} value={s.id}>{s.id.replace('-Q',' • T')}{s.closed ? ' • Encerrada' : ' • Atual'}</option>)}
+        </select>
+      </label>
+      {loading && <p>Carregando temporada…</p>}
+      {error && <p role="alert" className="text-rose-600">{error}</p>}
       {/* Top Banner */}
       <div className="bg-gradient-to-r from-indigo-900 via-purple-900 to-slate-900 text-white rounded-3xl p-5 shadow-xl relative overflow-hidden border border-indigo-800">
         <div className="flex items-center justify-between">
@@ -120,9 +144,10 @@ export const RankingTab: React.FC<RankingTabProps> = ({ players }) => {
           const mvpCount = player.mvpCount || 0;
 
           // Podium badges
-          const isGold = idx === 0;
-          const isSilver = idx === 1;
-          const isBronze = idx === 2;
+          const rank = sortBy === 'points' ? player.rank : idx + 1;
+          const isGold = rank === 1;
+          const isSilver = rank === 2;
+          const isBronze = rank === 3;
 
           return (
             <div
@@ -150,7 +175,7 @@ export const RankingTab: React.FC<RankingTabProps> = ({ players }) => {
                       : 'bg-slate-100 text-slate-600'
                   }`}
                 >
-                  {idx + 1}º
+                  {rank ? `${rank}º` : '—'}
                 </div>
 
                 <PlayerAvatar player={player} size="md" />
@@ -160,6 +185,8 @@ export const RankingTab: React.FC<RankingTabProps> = ({ players }) => {
                     <h4 className="font-black text-slate-900 text-sm sm:text-base truncate">{player.name}</h4>
                     {isGold && <Medal className="w-4.5 h-4.5 text-amber-500 shrink-0" />}
                   </div>
+
+                  <SeasonMedals medals={currentPlayers.find(p => p.id === player.id)?.medals || player.medals} />
 
                   {/* MVP Count Badge */}
                   {mvpCount > 0 && (
