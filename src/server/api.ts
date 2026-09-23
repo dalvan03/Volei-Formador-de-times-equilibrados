@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { seasonTransaction, readState, publicPlayer } from '../db/seasonService';
 import { FIRST_SEASON, seasonForDate, votingDeadline, votingOpen, mvpVotingOpen, localDate } from '../utils/seasons';
 import { generateBalancedTeams } from '../utils/teamGenerator';
+import { isValidMobilePhone } from '../utils/phone';
 import { actorFor, accountBlocked, clearCookie, consumeAttempt, hashPin, hashToken, issueSession, phoneNumber, sessionToken, validPin, verifyPin } from './auth';
 import type { Match } from '../types';
 import { whatsappConfig } from './whatsapp';
@@ -48,30 +49,30 @@ export function createApi() {
   api.post('/auth/check', route(async ({ sql, req, now }) => {
     if (!await consumeAttempt(sql, `ip:${req.ip}`, 30, now)) return { status: 429, body: { error: 'Muitas tentativas. Aguarde 15 minutos.' } };
     const phone = phoneNumber(req.body.phone);
-    requireValue(/^\d{10,11}$/.test(phone), 'Telefone inválido');
-    const rows = await sql`SELECT p.id, c.pin_hash FROM players p LEFT JOIN credentials c ON c.player_id = p.id WHERE regexp_replace(p.phone, '[^0-9]', '', 'g') = ${phone} AND p.is_guest = false`;
+    requireValue(isValidMobilePhone(phone), 'Informe um celular com DDD e 11 dígitos');
+    const rows = await sql`SELECT p.id, p.active, c.pin_hash FROM players p LEFT JOIN credentials c ON c.player_id = p.id WHERE regexp_replace(p.phone, '[^0-9]', '', 'g') = ${phone} AND p.is_guest = false`;
     if (rows.length > 1) throw new HttpError(409, 'Telefone duplicado. Solicite correção ao administrador.');
-    return { needsPin: !!rows[0]?.pin_hash, needsName: !rows.length };
+    if (!rows.length) throw new HttpError(404, 'Conta não cadastrada. Fale com um administrador.');
+    if (!rows[0].active) throw new HttpError(403, 'Conta desativada. Fale com um administrador.');
+    return { needsPin: !!rows[0].pin_hash };
   }, 'public'));
   api.post('/auth/login', route(async ({ sql, req, res, now, seasonId }) => {
     const phone = phoneNumber(req.body.phone), pin = req.body.pin;
     if (!await consumeAttempt(sql, `ip:${req.ip}`, 30, now) || await accountBlocked(sql, phone, now)) return { status: 429, body: { error: 'Muitas tentativas. Aguarde 15 minutos.' } };
-    requireValue(/^\d{10,11}$/.test(phone) && validPin(pin), 'Informe telefone e PIN de quatro dígitos');
+    requireValue(isValidMobilePhone(phone), 'Informe um celular com DDD e 11 dígitos');
     const rows = await sql`SELECT p.*, c.pin_hash FROM players p LEFT JOIN credentials c ON c.player_id = p.id WHERE regexp_replace(p.phone, '[^0-9]', '', 'g') = ${phone} AND p.is_guest = false`;
     if (rows.length > 1) throw new HttpError(409, 'Telefone duplicado. Solicite correção ao administrador.');
-    let p = rows[0];
-    if (p?.pin_hash) {
+    const p = rows[0];
+    if (!p) throw new HttpError(404, 'Conta não cadastrada. Fale com um administrador.');
+    if (!p.active) throw new HttpError(403, 'Conta desativada. Fale com um administrador.');
+    requireValue(validPin(pin), 'Informe um PIN de quatro dígitos');
+    if (p.pin_hash) {
       if (!await verifyPin(pin, p.pin_hash)) {
         await consumeAttempt(sql, `phone:${phone}`, 5, now);
         return { status: 401, body: { success: false, error: 'PIN incorreto' } };
       }
     } else {
       requireValue(req.body.confirmPin === pin, 'Confirme o PIN');
-      if (!p) {
-        const name = cleanText(req.body.name);
-        requireValue(name, 'Informe seu nome');
-        [p] = await sql`INSERT INTO players(id, name, phone, avatar_bg) VALUES (${randomUUID()}, ${name}, ${phone}, 'bg-emerald-600') RETURNING *`;
-      }
       await sql`INSERT INTO credentials(player_id, pin_hash) VALUES (${p.id}, ${await hashPin(pin)})`;
     }
     await sql`DELETE FROM auth_attempts WHERE key = ${'phone:' + phone}`;
@@ -120,11 +121,11 @@ export function createApi() {
   api.post('/teams/generate', route(async ({ sql, req, seasonId, now }) => {
     const state = await readState(sql, seasonId, now);
     requireValue(Array.isArray(req.body.playerIds), 'Selecione os jogadores');
-    const selected = state.players.filter(p => req.body.playerIds.includes(p.id));
+    const selected = state.players.filter(p => p.active !== false && req.body.playerIds.includes(p.id));
     requireValue(selected.length >= 2 && selected.length === new Set(req.body.playerIds).size, 'Jogadores inválidos');
     const { teamA, teamB } = generateBalancedTeams(selected, state.matches.filter(m => m.status === 'finalizada'), { teamAColor: 'bg-blue-600', teamBColor: 'bg-amber-600' });
     return { teamA, teamB };
-  }, 'admin'));
+  }));
 
   api.patch('/players/:id', route(async ({ sql, req, actor }) => {
     const [existing] = await sql`SELECT * FROM players WHERE id = ${req.params.id}`;
@@ -135,7 +136,7 @@ export function createApi() {
     if (!actor.is_admin && (p.isAdmin !== undefined && p.isAdmin !== existing.is_admin || p.phone !== undefined && p.phone !== existing.phone || p.active !== undefined && p.active !== existing.active || p.position !== undefined && p.position !== existing.position)) throw new HttpError(403, 'Campo restrito');
     const phone = actor.is_admin ? phoneNumber(p.phone ?? existing.phone) : existing.phone;
     if (!existing.is_guest) {
-      requireValue(/^\d{10,11}$/.test(phone), 'Telefone inválido');
+      requireValue(isValidMobilePhone(phone), 'Informe um celular com DDD e 11 dígitos');
       const duplicates = await sql`SELECT id FROM players WHERE id <> ${existing.id} AND regexp_replace(phone, '[^0-9]', '', 'g') = ${phone}`;
       requireValue(!duplicates.length, 'Telefone já cadastrado');
     }
@@ -153,7 +154,7 @@ export function createApi() {
     const p = req.body, phone = phoneNumber(p.phone);
     requireValue(cleanText(p.name) && typeof p.id === 'string');
     if (!p.isGuest) {
-      requireValue(/^\d{10,11}$/.test(phone), 'Telefone inválido');
+      requireValue(isValidMobilePhone(phone), 'Informe um celular com DDD e 11 dígitos');
       requireValue(!(await sql`SELECT id FROM players WHERE regexp_replace(phone, '[^0-9]', '', 'g') = ${phone}`).length, 'Telefone já cadastrado');
     }
     await sql`INSERT INTO players(id,name,phone,photo_url,avatar_bg,is_guest) VALUES (${p.id},${cleanText(p.name)},${phone},${p.photoUrl || null},${cleanText(p.avatarBg) || 'bg-emerald-600'},${p.isGuest === true})`;
@@ -163,6 +164,7 @@ export function createApi() {
     const [p] = await sql`SELECT * FROM players WHERE id = ${req.params.id}`;
     requireValue(p && !p.is_admin, 'Remova o privilégio de administrador antes de desativar');
     await sql`UPDATE players SET active = false WHERE id = ${p.id}`;
+    await sql`DELETE FROM sessions WHERE player_id = ${p.id}`;
     return null;
   }, 'admin'));
 

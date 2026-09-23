@@ -69,7 +69,7 @@ export default function App() {
           {activeTab === 'ranking' && <RankingTab players={players} seasonId={seasonId} />}
           {activeTab === 'admin' && <AdminTab players={players} pastMatches={pastMatches} session={session}
             onAddPlayer={(n,p,photo) => { void addPlayer(n,p,photo); }} onUpdatePlayer={p => { void updatePlayer(p); }}
-            onDeletePlayer={id => { void mutate(`/players/${encodeURIComponent(id)}`,'DELETE'); }}
+            onDeletePlayer={id => mutate(`/players/${encodeURIComponent(id)}`,'DELETE')}
             onToggleAdmin={id => { const p = players.find(p => p.id === id); if (p) void updatePlayer({...p,isAdmin:!p.isAdmin}); }}
             onOpenAuth={() => setProfile(true)} onDeleteMatch={id => { void mutate(`/matches/${encodeURIComponent(id)}`,'DELETE'); }} />}
         </main>

@@ -21,7 +21,7 @@ export function sessionToken(req: Request) {
 }
 export async function actorFor(sql: any, req: Request) {
   const [actor] = await sql`SELECT p.* FROM sessions s JOIN players p ON p.id = s.player_id
-    WHERE s.token_hash = ${hashToken(sessionToken(req))} AND s.expires_at > clock_timestamp()`;
+    WHERE s.token_hash = ${hashToken(sessionToken(req))} AND s.expires_at > clock_timestamp() AND p.active = true`;
   return actor;
 }
 const cookieOptions = () => ({ httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict' as const, path: '/' });

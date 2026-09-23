@@ -30,7 +30,16 @@ test('integração PostgreSQL: acesso, privacidade, votos e fechamento', { skip:
   let adminCookie='',aliceCookie='',bobCookie='';
   await t.test('primeiro acesso, PIN com zero, sessão e autenticação obrigatória', async () => {
     assert.equal((await request('/db')).status,401);
-    assert.equal((await request('/auth/check','POST',{phone:phones[1]})).json.data.needsName,false);
+    assert.deepEqual((await request('/auth/check','POST',{phone:phones[1]})).json.data,{needsPin:false});
+    assert.equal((await request('/auth/check','POST',{phone:'1133334444'})).status,400);
+    assert.equal((await request('/auth/login','POST',{phone:'1133334444',pin:'0012'})).status,400);
+    const unknownPhone='11999999999';
+    const unknownCheck=await request('/auth/check','POST',{phone:unknownPhone});
+    assert.equal(unknownCheck.status,404);
+    assert.match(unknownCheck.json.error,/Conta não cadastrada.*administrador/);
+    const unknownLogin=await request('/auth/login','POST',{phone:unknownPhone,pin:'0012',confirmPin:'0012',name:'Intruso'});
+    assert.equal(unknownLogin.status,404);
+    assert.equal((await client`SELECT count(*)::int AS total FROM players WHERE phone=${unknownPhone}`)[0].total,0);
     for (let i=0;i<3;i++) {
       const r = await request('/auth/login','POST',{phone:phones[i],pin:'0012',confirmPin:'0012'});
       assert.equal(r.status,200); assert.match(r.cookie!,/HttpOnly/); assert.match(r.cookie!,/SameSite=Strict/); assert.match(r.cookie!,/Max-Age=7776000/);
@@ -72,6 +81,7 @@ test('integração PostgreSQL: acesso, privacidade, votos e fechamento', { skip:
     assert.equal((await request('/matches','POST',m,adminCookie)).status,200);
     const teams=await request('/teams/generate','POST',{playerIds:ids.slice(1)},adminCookie);
     assert.equal(teams.status,200); assert.deepEqual(Object.keys(teams.json.data).sort(),['teamA','teamB']);
+    assert.equal((await request('/teams/generate','POST',{playerIds:ids.slice(1)},aliceCookie)).status,200);
     assert.equal((await request('/feedback','POST',vote,aliceCookie)).status,200);
     assert.equal((await request('/feedback','POST',vote,aliceCookie)).status,200);
     const rows=await client`SELECT * FROM rating_feedbacks WHERE match_id=${matchId}`;
@@ -145,5 +155,14 @@ test('integração PostgreSQL: acesso, privacidade, votos e fechamento', { skip:
     const archived=await request('/seasons/'+seasonId+'/ranking','GET',undefined,adminCookie);
     assert(archived.json.data.every((p:any)=>!('rating' in p)&&!('ratingWeight' in p)));
     assert.equal((await request('/matches/'+oldId,'DELETE',undefined,adminCookie)).status,409);
+  });
+  await t.test('remover atleta tira do elenco e revoga o acesso sem apagar histórico', async () => {
+    assert.equal((await request('/players/'+ids[2],'DELETE',undefined,adminCookie)).status,200);
+    assert.equal((await client`SELECT active FROM players WHERE id=${ids[2]}`)[0].active,false);
+    assert.equal((await request('/auth/session','GET',undefined,bobCookie)).json.data,null);
+    assert.equal((await request('/auth/check','POST',{phone:phones[2]})).status,403);
+    assert.equal((await request('/auth/login','POST',{phone:phones[2],pin:'0042'})).status,403);
+    assert.equal((await request('/teams/generate','POST',{playerIds:[ids[1],ids[2]]},adminCookie)).status,400);
+    assert.equal((await client`SELECT count(*)::int AS total FROM match_players WHERE player_id=${ids[2]}`)[0].total>0,true);
   });
 });

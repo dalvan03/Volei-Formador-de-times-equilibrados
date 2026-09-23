@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { isValidMobilePhone } from '../utils/phone';
 import { Users, UserPlus, Shield, Phone, Edit2, Trash2, Volleyball, RefreshCw, CheckCircle2, RotateCcw, ChevronDown, ShieldAlert, FileText } from 'lucide-react';
 import { Player, Match, UserSession } from '../types';
 import { PlayerAvatar } from './PlayerAvatar';
@@ -14,7 +15,7 @@ interface AdminTabProps {
   session: UserSession | null;
   onAddPlayer: (name: string, phone: string, photoUrl?: string) => void;
   onUpdatePlayer: (player: Player) => void;
-  onDeletePlayer?: (playerId: string) => void;
+  onDeletePlayer?: (playerId: string) => Promise<boolean>;
   onToggleAdmin: (playerId: string) => void;
   onOpenAuth: () => void;
   onResetData?: () => void;
@@ -47,6 +48,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   const [visibleMatchesCount, setVisibleMatchesCount] = useState(5);
 
   const isAdmin = session?.isAdmin || false;
+  const roster = players.filter(p => p.active !== false);
   const [resetMessage, setResetMessage] = useState('');
   async function resetPin(id: string) {
     if (!confirm('Redefinir o PIN e desconectar todos os dispositivos deste atleta?')) return;
@@ -60,6 +62,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
       alert('Preencha o nome e o telefone.');
       return;
     }
+    if (!isValidMobilePhone(newPhone)) { alert('Informe um celular com DDD e 11 dígitos.'); return; }
     onAddPlayer(newName.trim(), newPhone.replace(/\D/g, ''), newPhotoUrl);
     setNewName('');
     setNewPhone('');
@@ -70,6 +73,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!isAdmin || !editingPlayer) return;
+    if (!editingPlayer.isGuest && !isValidMobilePhone(editingPlayer.phone)) { alert('Informe um celular com DDD e 11 dígitos.'); return; }
     onUpdatePlayer(editingPlayer);
     setEditingPlayer(null);
   };
@@ -79,7 +83,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
       {isAdmin && <details className="rounded-2xl bg-white p-4 border"><summary className="font-bold cursor-pointer">Recuperar acesso de um atleta</summary>
         <p className="text-xs text-slate-500 my-2">Confirme a identidade do atleta antes de liberar um novo PIN.</p>
         {resetMessage && <p role="status" className="text-sm my-2">{resetMessage}</p>}
-        {players.filter(p => !p.isGuest).map(p => <div key={p.id} className="flex justify-between py-2 text-sm"><span>{p.name}</span><button onClick={() => resetPin(p.id)} className="text-indigo-700 font-bold">Redefinir PIN</button></div>)}
+        {roster.filter(p => !p.isGuest).map(p => <div key={p.id} className="flex justify-between py-2 text-sm"><span>{p.name}</span><button onClick={() => resetPin(p.id)} className="text-indigo-700 font-bold">Redefinir PIN</button></div>)}
       </details>}
       {/* Header Banner */}
       <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-teal-950 text-white rounded-3xl p-5 shadow-xl relative overflow-hidden border border-slate-800">
@@ -122,7 +126,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
       {/* Players Header & Add CTA */}
       <div className="flex items-center justify-between pt-2">
         <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
-          <span>Elenco do Grupo ({players.length})</span>
+          <span>Elenco do Grupo ({roster.length})</span>
         </h3>
 
         <button
@@ -135,7 +139,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
 
       {/* Players List */}
       <div className="space-y-2.5">
-        {players.map((p) => (
+        {roster.map((p) => (
           <div
             key={p.id}
             className="bg-white rounded-3xl p-4 shadow-sm border border-slate-200/80 flex items-center justify-between gap-3"
@@ -310,9 +314,9 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 <input
                   type="tel"
                   inputMode="numeric"
-                  pattern="[0-9]*"
+                  pattern="[0-9]{11}" maxLength={11}
                   value={newPhone}
-                  onChange={(e) => setNewPhone(e.target.value.replace(/\D/g, ''))}
+                  onChange={(e) => setNewPhone(e.target.value.replace(/\D/g, '').slice(0, 11))}
                   placeholder="Ex: 11999990099"
                   className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-medium"
                   required
@@ -372,13 +376,13 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 <input
                   type="tel"
                   inputMode="numeric"
-                  pattern="[0-9]*"
+                  pattern={editingPlayer.isGuest ? undefined : "[0-9]{11}"} maxLength={11}
                   value={editingPlayer.phone}
                   onChange={(e) =>
-                    setEditingPlayer({ ...editingPlayer, phone: e.target.value.replace(/\D/g, '') })
+                    setEditingPlayer({ ...editingPlayer, phone: e.target.value.replace(/\D/g, '').slice(0, 11) })
                   }
                   className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-medium"
-                  required
+                  required={!editingPlayer.isGuest}
                 />
               </div>
 
@@ -499,11 +503,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (onDeletePlayer && playerToDelete) {
-                    onDeletePlayer(playerToDelete.id);
-                  }
-                  setPlayerToDelete(null);
+                onClick={async () => {
+                  if (onDeletePlayer && playerToDelete && await onDeletePlayer(playerToDelete.id)) setPlayerToDelete(null);
                 }}
                 className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs transition-all cursor-pointer shadow-md shadow-rose-600/20"
               >

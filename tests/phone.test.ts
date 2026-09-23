@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatPhone } from '../src/utils/phone';
+import { formatPhone, isValidMobilePhone } from '../src/utils/phone';
 
 test('telefone ganha máscara progressiva, aceita colagem e limita a 11 dígitos', () => {
   assert.equal(formatPhone(''), '');
@@ -14,4 +14,12 @@ test('telefone ganha máscara progressiva, aceita colagem e limita a 11 dígitos
   assert.equal(formatPhone('5199906374799'), '(51) 99906-3747');
   assert.equal(formatPhone('5133334444'), '(51) 3333-4444');
   assert.equal(formatPhone('abc'), '');
+});
+
+test('celular exige DDD e nove dígitos começando por 9', () => {
+  assert.equal(isValidMobilePhone('(51) 99906-3747'), true);
+  assert.equal(isValidMobilePhone('5133334444'), false);
+  assert.equal(isValidMobilePhone('5199906374'), false);
+  assert.equal(isValidMobilePhone('51099063747'), false);
+  assert.equal(isValidMobilePhone('00999063747'), false);
 });

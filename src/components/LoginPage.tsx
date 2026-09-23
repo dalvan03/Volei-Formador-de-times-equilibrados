@@ -2,17 +2,18 @@ import React, { useState } from 'react';
 import { Volleyball, LockKeyhole } from 'lucide-react';
 import { apiRequest, clearClientState } from '../utils/storage';
 import type { UserSession } from '../types';
-import { formatPhone } from '../utils/phone';
+import { formatPhone, isValidMobilePhone } from '../utils/phone';
 
 export function LoginPage({ onLogin }: { onLogin: (session: UserSession) => void }) {
-  const [phone, setPhone] = useState(''), [pin, setPin] = useState(''), [confirmPin, setConfirmPin] = useState(''), [name, setName] = useState('');
-  const [step, setStep] = useState<{ needsPin: boolean; needsName: boolean } | null>(null);
+  const [phone, setPhone] = useState(''), [pin, setPin] = useState(''), [confirmPin, setConfirmPin] = useState('');
+  const [step, setStep] = useState<{ needsPin: boolean } | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError('');
     try {
+      if (!isValidMobilePhone(phone)) { setError('Informe um celular com DDD e 11 dígitos.'); return; }
       if (!step) setStep(await apiRequest('/auth/check', 'POST', { phone }));
-      else { const session = await apiRequest<UserSession>('/auth/login', 'POST', { phone, pin, confirmPin, name }); clearClientState(); onLogin(session); }
+      else { const session = await apiRequest<UserSession>('/auth/login', 'POST', { phone, pin, confirmPin }); clearClientState(); onLogin(session); }
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   }
   const field = 'w-full rounded-2xl border border-slate-600 bg-slate-800 p-3 text-white';
@@ -21,10 +22,9 @@ export function LoginPage({ onLogin }: { onLogin: (session: UserSession) => void
     <h1 className="text-2xl font-black text-center">Culto de Segunda</h1>
     <p className="text-slate-300 text-center mt-2 mb-8">Seu vôlei, suas conquistas.</p>
     <form onSubmit={submit} className="space-y-5">
-      <label className="block">Telefone com DDD<input className={field} type="tel" autoComplete="tel" inputMode="tel" placeholder="(51) 99988-7766" value={formatPhone(phone)} disabled={!!step} onChange={e => setPhone(e.target.value.replace(/\D/g, '').slice(0, 11))} required /></label>
+      <label className="block">Celular com DDD (11 dígitos)<input className={field} type="tel" autoComplete="tel" inputMode="tel" placeholder="(51) 99988-7766" value={formatPhone(phone)} disabled={!!step} onChange={e => setPhone(e.target.value.replace(/\D/g, '').slice(0, 11))} required /></label>
       {step && <>
         <p className="text-sm text-emerald-300">{step.needsPin ? 'Informe seu PIN para entrar neste dispositivo.' : 'Primeiro acesso: crie seu PIN de quatro números.'}</p>
-        {step.needsName && <label className="block">Nome<input className={field} value={name} onChange={e => setName(e.target.value)} required maxLength={120} /></label>}
         <label className="block">PIN de 4 dígitos<input className={field} type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete={step.needsPin ? 'current-password' : 'new-password'} value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ''))} required /></label>
         {!step.needsPin && <label className="block">Confirme o PIN<input className={field} type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={confirmPin} onChange={e => setConfirmPin(e.target.value.replace(/\D/g, ''))} required /></label>}
       </>}

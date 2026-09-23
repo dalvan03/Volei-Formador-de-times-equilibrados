@@ -175,7 +175,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
   };
 
   // Match ativo (em andamento) ou draft local
-  const activeMatch = currentMatch?.status === 'em_andamento' ? currentMatch : session?.isAdmin ? draftMatch : currentMatch;
+  const activeMatch = currentMatch?.status === 'em_andamento' ? currentMatch : draftMatch || currentMatch;
 
   const handleGenerateTeams = async () => {
     const presentPlayers = players.filter((p) => p.active !== false && selectedPresentIds.includes(p.id));
@@ -385,8 +385,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
       )}
 
       {/* 2. No Active Round View -> Render "Iniciar uma rodada de vôlei hoje" */}
-      {!hasActiveMatch && !session?.isAdmin && <p className="p-5 bg-white rounded-2xl text-sm">Nenhuma rodada em andamento. Aguarde um administrador organizar os times.</p>}
-      {!hasActiveMatch && session?.isAdmin && (
+      {!hasActiveMatch && (
         <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200/80 text-center space-y-4 my-2">
           <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto shadow-inner">
             <Volleyball className="w-9 h-9" />
@@ -449,7 +448,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                   type="button"
                   onClick={handleConfirmDelete}
                   title="Excluir/Cancelar Rodada"
-                  disabled={!session?.isAdmin}
+                  disabled={!!currentMatch && !session?.isAdmin}
                   className="p-2.5 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 transition-all cursor-pointer"
                 >
                   <Trash2 className="w-5 h-5" />
@@ -462,7 +461,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
           </div>
 
           {/* Presence Selection ("Quem vai jogar hoje?") - Available while status is 'agendada' */}
-          {session?.isAdmin && activeMatch.status === 'agendada' && (
+          {activeMatch.status === 'agendada' && (
             <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200/80 space-y-4">
               <div className="flex items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
                 <div>
@@ -473,14 +472,14 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                   <p className="text-xs text-slate-500 font-medium">Marque os atletas presentes na quadra</p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <button
+                  {session?.isAdmin && <button
                     type="button"
                     onClick={() => setShowAddGuestModal(true)}
                     className="text-xs font-black text-purple-700 hover:text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-3 py-1.5 rounded-xl cursor-pointer flex items-center gap-1 shadow-2xs transition-all"
                   >
                     <UserPlus className="w-3.5 h-3.5 text-purple-600" />
                     + Convidado
-                  </button>
+                  </button>}
                   <button
                     type="button"
                     onClick={selectAll}
@@ -575,7 +574,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                     <MessageCircle className="w-3.5 h-3.5 fill-white" />
                     <span>Compartilhar Times</span>
                   </button>
-                  {session?.isAdmin && activeMatch.status === 'agendada' && (
+                  {activeMatch.status === 'agendada' && (
                     <button
                       type="button"
                       onClick={() => setIsSwapping(!isSwapping)}
@@ -845,7 +844,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
             <div>
               <h3 className="text-base font-extrabold text-slate-900">Excluir e Cancelar Rodada?</h3>
               <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                Esta ação irá cancelar a rodada iniciada e remover os times montados. Um administrador poderá organizar uma nova rodada.
+                Esta ação irá cancelar a rodada e remover os times montados.
               </p>
             </div>
             <div className="flex gap-2 pt-2">
@@ -860,6 +859,7 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                 type="button"
                 onClick={async () => {
                   if (activeMatch) {
+                    if (currentMatch?.id === activeMatch.id && !session?.isAdmin) return;
                     if (currentMatch?.id === activeMatch.id && !await onDeleteMatch(activeMatch.id)) return;
                     setDraftMatch(null);
                     clearStoredDraft();
