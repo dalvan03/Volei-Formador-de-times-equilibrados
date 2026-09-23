@@ -156,6 +156,20 @@ test('integração PostgreSQL: acesso, privacidade, votos e fechamento', { skip:
     assert(archived.json.data.every((p:any)=>!('rating' in p)&&!('ratingWeight' in p)));
     assert.equal((await request('/matches/'+oldId,'DELETE',undefined,adminCookie)).status,409);
   });
+  await t.test('sexo M/F é obrigatório no cadastro e editável pelo administrador', async () => {
+    const id='sex'+suffix, phone='11988887777';
+    const athlete={id,name:'Atleta Teste',phone,avatarBg:'bg-blue-600'};
+    assert.equal((await request('/players','POST',athlete,adminCookie)).status,400);
+    assert.equal((await request('/players','POST',{...athlete,sex:'X'},adminCookie)).status,400);
+    assert.equal((await request('/players','POST',{...athlete,sex:'M'},adminCookie)).status,200);
+    assert.equal((await client`SELECT sex FROM players WHERE id=${id}`)[0].sex,'M');
+    assert.equal((await request('/players/'+id,'PATCH',{...athlete,sex:'F'},adminCookie)).status,200);
+    assert.equal((await client`SELECT sex FROM players WHERE id=${id}`)[0].sex,'F');
+    assert.equal((await request('/players/'+id,'PATCH',{...athlete,sex:'M'},aliceCookie)).status,403);
+    const guestId='guestsex'+suffix;
+    assert.equal((await request('/players','POST',{id:guestId,name:'Convidado',phone:'',isGuest:true,sex:'F'},adminCookie)).status,200);
+    assert.equal((await client`SELECT sex FROM players WHERE id=${guestId}`)[0].sex,'F');
+  });
   await t.test('remover atleta tira do elenco e revoga o acesso sem apagar histórico', async () => {
     assert.equal((await request('/players/'+ids[2],'DELETE',undefined,adminCookie)).status,200);
     assert.equal((await client`SELECT active FROM players WHERE id=${ids[2]}`)[0].active,false);

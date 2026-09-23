@@ -40,7 +40,7 @@ interface GameDayTabProps {
   onDeleteMatch: (matchId: string) => Promise<boolean>;
   onNavigateToFeedback?: () => void;
   onStartManualMatch?: () => void;
-  onAddGuest?: (guestName?: string) => Promise<Player | null>;
+  onAddGuest?: (guestName: string, sex: 'M' | 'F') => Promise<Player | null>;
   onDeleteGuest?: (playerId: string) => void;
 }
 
@@ -141,14 +141,16 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
   const [showShareTeamsModal, setShowShareTeamsModal] = useState(false);
   const [finalizedSummaryModal, setFinalizedSummaryModal] = useState<Match | null>(null);
   const [guestNameInput, setGuestNameInput] = useState('');
+  const [guestSex, setGuestSex] = useState<'' | 'M' | 'F'>('');
 
   const handleAddGuestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!onAddGuest) return;
+    if (!onAddGuest || !guestSex) return;
 
-    const newGuest = await onAddGuest(guestNameInput);
+    const newGuest = await onAddGuest(guestNameInput, guestSex);
     if (!newGuest) return;
     setGuestNameInput('');
+    setGuestSex('');
     setShowAddGuestModal(false);
 
     // Auto select guest in local presence (sem salvar no DB ainda)
@@ -915,6 +917,12 @@ export const GameDayTab: React.FC<GameDayTabProps> = ({
                   Os convidados são atletas sem cadastro. Para o balanceamento dos times, o sistema utilizará a nota 3.0 para calcular a força da equipe.
                 </p>
               </div>
+
+              <label className="block text-xs font-bold text-slate-700">Sexo
+                <select value={guestSex} onChange={e => setGuestSex(e.target.value as '' | 'M' | 'F')} className="w-full mt-1 px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs" required>
+                  <option value="">Selecione</option><option value="M">M</option><option value="F">F</option>
+                </select>
+              </label>
 
               <div className="flex items-center gap-2 pt-2">
                 <button

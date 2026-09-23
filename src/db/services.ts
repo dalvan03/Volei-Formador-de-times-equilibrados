@@ -12,6 +12,7 @@ export async function runMigrationAndCalculations() {
         name TEXT NOT NULL,
         phone TEXT NOT NULL,
         position TEXT,
+        sex TEXT CHECK (sex IN ('M', 'F')),
         photo_url TEXT,
         avatar_bg TEXT NOT NULL,
         is_admin BOOLEAN NOT NULL DEFAULT false,

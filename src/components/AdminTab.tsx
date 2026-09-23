@@ -13,7 +13,7 @@ interface AdminTabProps {
   players: Player[];
   pastMatches: Match[];
   session: UserSession | null;
-  onAddPlayer: (name: string, phone: string, photoUrl?: string) => void;
+  onAddPlayer: (name: string, phone: string, sex: 'M' | 'F', photoUrl?: string) => void;
   onUpdatePlayer: (player: Player) => void;
   onDeletePlayer?: (playerId: string) => Promise<boolean>;
   onToggleAdmin: (playerId: string) => void;
@@ -39,6 +39,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   const [showLogsModal, setShowLogsModal] = useState(false);
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
+  const [newSex, setNewSex] = useState<'' | 'M' | 'F'>('');
   const [newPhotoUrl, setNewPhotoUrl] = useState<string | undefined>(undefined);
 
   const [editingPlayer, setEditingPlayer] = useState<Player | null>(null);
@@ -63,9 +64,11 @@ export const AdminTab: React.FC<AdminTabProps> = ({
       return;
     }
     if (!isValidMobilePhone(newPhone)) { alert('Informe um celular com DDD e 11 dígitos.'); return; }
-    onAddPlayer(newName.trim(), newPhone.replace(/\D/g, ''), newPhotoUrl);
+    if (!newSex) { alert('Selecione M ou F.'); return; }
+    onAddPlayer(newName.trim(), newPhone.replace(/\D/g, ''), newSex, newPhotoUrl);
     setNewName('');
     setNewPhone('');
+    setNewSex('');
     setNewPhotoUrl(undefined);
     setShowAddModal(false);
   };
@@ -73,6 +76,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!isAdmin || !editingPlayer) return;
+    if (editingPlayer.sex !== 'M' && editingPlayer.sex !== 'F') { alert('Selecione M ou F.'); return; }
     if (!editingPlayer.isGuest && !isValidMobilePhone(editingPlayer.phone)) { alert('Informe um celular com DDD e 11 dígitos.'); return; }
     onUpdatePlayer(editingPlayer);
     setEditingPlayer(null);
@@ -323,6 +327,12 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 />
               </div>
 
+              <label className="block text-xs font-bold text-slate-700">Sexo
+                <select value={newSex} onChange={e => setNewSex(e.target.value as '' | 'M' | 'F')} className="w-full mt-1 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm" required>
+                  <option value="">Selecione</option><option value="M">M</option><option value="F">F</option>
+                </select>
+              </label>
+
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"
@@ -422,6 +432,12 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                   />
                 </div>
               </div>
+
+              <label className="block text-xs font-bold text-slate-700">Sexo
+                <select value={editingPlayer.sex || ''} onChange={e => setEditingPlayer({ ...editingPlayer, sex: e.target.value as 'M' | 'F' })} className="w-full mt-1 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm" required>
+                  <option value="">Selecione</option><option value="M">M</option><option value="F">F</option>
+                </select>
+              </label>
 
               <div className="flex gap-2 pt-2">
                 <button

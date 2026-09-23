@@ -5,6 +5,7 @@ export interface Player {
   name: string;
   phone: string;
   position?: Position;
+  sex?: 'M' | 'F' | null;
   photoUrl?: string;
   rating?: number; // Internal calculation only; omitted from public and administrator responses
   ratingCount?: number;

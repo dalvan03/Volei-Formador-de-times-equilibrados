@@ -47,7 +47,7 @@ export async function readState(sql: any, seasonId: string, now = Date.now()) {
     }
     const medals = { gold: 0, silver: 0, bronze: 0 };
     results.filter((r: any) => r.player_id === p.id && r.medal).forEach((r: any) => medals[r.medal as keyof typeof medals]++);
-    return { id: p.id, name: p.name, phone: p.phone, position: p.position, photoUrl: p.photo_url, avatarBg: p.avatar_bg, isAdmin: p.is_admin, active: p.active, isGuest: p.is_guest,
+    return { id: p.id, name: p.name, phone: p.phone, position: p.position, sex: p.sex, photoUrl: p.photo_url, avatarBg: p.avatar_bg, isAdmin: p.is_admin, active: p.active, isGuest: p.is_guest,
       rating: rating.mean, ratingCount: current.length, ratingWeight: rating.weight, wins, losses, draws, matchesPlayed, setBalance, mvpCount, medals };
   });
   const ranks = new Map(rankedPlayers(players).map(p => [p.id, p.rank]));

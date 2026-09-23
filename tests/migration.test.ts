@@ -29,6 +29,7 @@ test('migração faz backup, preserva votos e médias, não reabre MVP encerrado
   assert.equal((await sql`SELECT * FROM rating_feedbacks`).length,2);
   assert.equal((await sql`SELECT avg(rating)::float8 AS mean FROM rating_feedbacks`)[0].mean,4);
   assert.equal((await sql`SELECT * FROM mvp_votes`).length,1);
+  assert.equal((await sql`SELECT sex FROM players WHERE id='one'`)[0].sex,null);
   assert.equal((await sql`SELECT * FROM season_results`).length,0);
   const [match]=await sql`SELECT * FROM matches WHERE id='current'`;
   assert.equal(match.season_id,'2026-Q3');

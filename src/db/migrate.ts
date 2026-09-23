@@ -7,7 +7,8 @@ export async function migrate() {
   const [{ exists }] = await client`SELECT to_regclass('public.seasons') IS NOT NULL AS exists`;
   const [{ notifications }] = await client`SELECT to_regclass('public.whatsapp_deliveries') IS NOT NULL AS notifications`;
   const [reminder] = await client`SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.whatsapp_deliveries') AND conname='whatsapp_deliveries_kind_check' AND pg_get_constraintdef(oid) LIKE '%mvp_reminder%') AS ready`;
-  if (exists && notifications && reminder.ready) return;
+  const [{ sexReady }] = await client`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'players' AND column_name = 'sex') AS "sexReady"`;
+  if (exists && notifications && reminder.ready && sexReady) return;
   await backupDatabase();
   if (!exists) {
   await runMigrationAndCalculations();
@@ -48,6 +49,9 @@ export async function migrate() {
       message_id TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
       PRIMARY KEY (match_id, kind)
     )`;
+    await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS sex TEXT`;
+    await sql`ALTER TABLE players DROP CONSTRAINT IF EXISTS players_sex_check`;
+    await sql`ALTER TABLE players ADD CONSTRAINT players_sex_check CHECK (sex IN ('M', 'F'))`;
     await sql`ALTER TABLE whatsapp_deliveries DROP CONSTRAINT IF EXISTS whatsapp_deliveries_kind_check`;
     await sql`ALTER TABLE whatsapp_deliveries ADD CONSTRAINT whatsapp_deliveries_kind_check CHECK (kind IN ('reminder','mvp','mvp_reminder'))`;
   });

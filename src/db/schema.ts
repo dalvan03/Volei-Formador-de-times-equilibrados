@@ -17,6 +17,7 @@ export const players = pgTable('players', {
   name: text('name').notNull(),
   phone: text('phone').notNull(),
   position: text('position'),
+  sex: text('sex'),
   photoUrl: text('photo_url'),
   avatarBg: text('avatar_bg').notNull(),
   isAdmin: boolean('is_admin').default(false).notNull(),

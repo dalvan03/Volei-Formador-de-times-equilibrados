@@ -133,13 +133,14 @@ export function createApi() {
     if (!actor.is_admin && actor.id !== existing.id) throw new HttpError(403, 'Você só pode editar seu perfil');
     const p = req.body;
     requireValue(cleanText(p.name), 'Informe o nome');
-    if (!actor.is_admin && (p.isAdmin !== undefined && p.isAdmin !== existing.is_admin || p.phone !== undefined && p.phone !== existing.phone || p.active !== undefined && p.active !== existing.active || p.position !== undefined && p.position !== existing.position)) throw new HttpError(403, 'Campo restrito');
+    if (!actor.is_admin && (p.isAdmin !== undefined && p.isAdmin !== existing.is_admin || p.phone !== undefined && p.phone !== existing.phone || p.active !== undefined && p.active !== existing.active || p.position !== undefined && p.position !== existing.position || p.sex !== undefined && p.sex !== existing.sex)) throw new HttpError(403, 'Campo restrito');
     const phone = actor.is_admin ? phoneNumber(p.phone ?? existing.phone) : existing.phone;
     if (!existing.is_guest) {
       requireValue(isValidMobilePhone(phone), 'Informe um celular com DDD e 11 dígitos');
       const duplicates = await sql`SELECT id FROM players WHERE id <> ${existing.id} AND regexp_replace(phone, '[^0-9]', '', 'g') = ${phone}`;
       requireValue(!duplicates.length, 'Telefone já cadastrado');
     }
+    if (actor.is_admin && p.sex !== undefined) requireValue(p.sex === 'M' || p.sex === 'F' || (existing.is_guest && p.sex == null), 'Selecione M ou F');
     const isAdmin = actor.is_admin && typeof p.isAdmin === 'boolean' ? p.isAdmin : existing.is_admin;
     if (existing.is_admin && !isAdmin) {
       const admins = await sql`SELECT id FROM players WHERE is_admin = true`;
@@ -147,17 +148,19 @@ export function createApi() {
     }
     await sql`UPDATE players SET name = ${cleanText(p.name)}, photo_url = ${typeof p.photoUrl === 'string' ? p.photoUrl : null}, phone = ${phone}, is_admin = ${isAdmin},
       active = ${actor.is_admin && typeof p.active === 'boolean' ? p.active : existing.active},
-      position = ${actor.is_admin ? p.position || null : existing.position} WHERE id = ${existing.id}`;
+      position = ${actor.is_admin ? p.position || null : existing.position},
+      sex = ${actor.is_admin ? (['M','F'].includes(p.sex) ? p.sex : existing.sex) : existing.sex} WHERE id = ${existing.id}`;
     return null;
   }));
   api.post('/players', route(async ({ sql, req }) => {
     const p = req.body, phone = phoneNumber(p.phone);
     requireValue(cleanText(p.name) && typeof p.id === 'string');
+    requireValue(p.sex === 'M' || p.sex === 'F', 'Selecione M ou F');
     if (!p.isGuest) {
       requireValue(isValidMobilePhone(phone), 'Informe um celular com DDD e 11 dígitos');
       requireValue(!(await sql`SELECT id FROM players WHERE regexp_replace(phone, '[^0-9]', '', 'g') = ${phone}`).length, 'Telefone já cadastrado');
     }
-    await sql`INSERT INTO players(id,name,phone,photo_url,avatar_bg,is_guest) VALUES (${p.id},${cleanText(p.name)},${phone},${p.photoUrl || null},${cleanText(p.avatarBg) || 'bg-emerald-600'},${p.isGuest === true})`;
+    await sql`INSERT INTO players(id,name,phone,photo_url,avatar_bg,is_guest,sex) VALUES (${p.id},${cleanText(p.name)},${phone},${p.photoUrl || null},${cleanText(p.avatarBg) || 'bg-emerald-600'},${p.isGuest === true},${p.sex})`;
     return null;
   }, 'admin'));
   api.delete('/players/:id', route(async ({ sql, req }) => {

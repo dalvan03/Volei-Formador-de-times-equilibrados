@@ -46,8 +46,8 @@ export default function App() {
   const rated = getStoredBalanceFeedbacks();
   const unratedMatch = pastMatches.find(m => votingOpen(m) && [...m.teamA.playerIds,...m.teamB.playerIds].includes(session?.player?.id || '') && !rated.some(b => b.matchId === m.id)) || null;
   const updatePlayer = async (p: Player) => mutate(`/players/${encodeURIComponent(p.id)}`, 'PATCH', p);
-  async function addPlayer(name: string, phone: string, photoUrl?: string, guest = false): Promise<Player | null> {
-    const p: Player = { id: crypto.randomUUID(), name, phone, photoUrl, isGuest: guest, active: true, wins:0, losses:0, matchesPlayed:0, avatarBg:'bg-emerald-600' };
+  async function addPlayer(name: string, phone: string, photoUrl?: string, guest = false, sex?: 'M' | 'F'): Promise<Player | null> {
+    const p: Player = { id: crypto.randomUUID(), name, phone, photoUrl, sex, isGuest: guest, active: true, wins:0, losses:0, matchesPlayed:0, avatarBg:'bg-emerald-600' };
     return await mutate('/players', 'POST', p) ? p : null;
   }
   async function startMatch() {
@@ -63,12 +63,12 @@ export default function App() {
           {activeTab === 'game' && <GameDayTab key={seasonId} players={players} currentMatch={currentMatch} pastMatches={pastMatches} session={session} unratedMatch={unratedMatch}
             onUpdateMatch={m => mutate('/matches','POST',m)} onDeleteMatch={id => mutate(`/matches/${encodeURIComponent(id)}`,'DELETE')}
             onNavigateToFeedback={() => setActiveTab('feedback')} onStartManualMatch={startMatch}
-            onAddGuest={name => addPlayer(name?.trim() ? `${name.trim()} (Convidado)` : 'Convidado', '', undefined, true)}
+            onAddGuest={(name, sex) => addPlayer(name.trim() ? `${name.trim()} (Convidado)` : 'Convidado', '', undefined, true, sex)}
             onDeleteGuest={id => { void mutate(`/players/${encodeURIComponent(id)}`,'DELETE'); }} />}
           {activeTab === 'feedback' && <FeedbackTab currentMatch={currentMatch} pastMatches={pastMatches} players={players} session={session} onOpenAuth={() => setProfile(true)} onFeedbackSubmitted={() => { void refresh().catch(e => setError(e.message)); }} />}
           {activeTab === 'ranking' && <RankingTab players={players} seasonId={seasonId} />}
           {activeTab === 'admin' && <AdminTab players={players} pastMatches={pastMatches} session={session}
-            onAddPlayer={(n,p,photo) => { void addPlayer(n,p,photo); }} onUpdatePlayer={p => { void updatePlayer(p); }}
+            onAddPlayer={(n,p,sex,photo) => { void addPlayer(n,p,photo,false,sex); }} onUpdatePlayer={p => { void updatePlayer(p); }}
             onDeletePlayer={id => mutate(`/players/${encodeURIComponent(id)}`,'DELETE')}
             onToggleAdmin={id => { const p = players.find(p => p.id === id); if (p) void updatePlayer({...p,isAdmin:!p.isAdmin}); }}
             onOpenAuth={() => setProfile(true)} onDeleteMatch={id => { void mutate(`/matches/${encodeURIComponent(id)}`,'DELETE'); }} />}
