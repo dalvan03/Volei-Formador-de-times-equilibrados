@@ -27,9 +27,10 @@ export const RankingTab: React.FC<RankingTabProps> = ({ players: currentPlayers,
     return () => { active = false; };
   }, [selected, seasonId]);
   const players = (selected === seasonId ? currentPlayers : archive).filter(p => !p.isGuest);
-  const [sortBy, setSortBy] = useState<'points' | 'wins' | 'matches' | 'mvp'>('points');
+  const [sortBy, setSortBy] = useState<'points' | 'wins' | 'performance' | 'mvp'>('points');
 
-  const getPoints = (p: Player) => p.wins * 3 + (p.draws || 0) * 1;
+  const getPoints = (p: Player) => p.wins * 3 + (p.draws || 0);
+  const getWinRate = (p: Player) => p.matchesPlayed > 0 ? p.wins / p.matchesPlayed : 0;
 
   // Sort
   const sortedPlayers = [...players].sort((a, b) => {
@@ -46,9 +47,9 @@ export const RankingTab: React.FC<RankingTabProps> = ({ players: currentPlayers,
       if (diffWins !== 0) return diffWins;
       return getPoints(b) - getPoints(a);
     }
-    const diffMatches = b.matchesPlayed - a.matchesPlayed;
-    if (diffMatches !== 0) return diffMatches;
-    return getPoints(b) - getPoints(a);
+    const diffRate = getWinRate(b) - getWinRate(a);
+    if (diffRate !== 0) return diffRate;
+    return getPoints(b) - getPoints(a) || b.matchesPlayed - a.matchesPlayed;
   });
 
   return (
@@ -119,15 +120,15 @@ export const RankingTab: React.FC<RankingTabProps> = ({ players: currentPlayers,
           </button>
           <button
             type="button"
-            onClick={() => setSortBy('matches')}
+            onClick={() => setSortBy('performance')}
             className={`py-3 px-3 rounded-2xl text-xs sm:text-sm font-extrabold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm active:scale-98 ${
-              sortBy === 'matches'
+              sortBy === 'performance'
                 ? 'bg-indigo-600 text-white shadow-indigo-600/25 ring-2 ring-indigo-600/30'
                 : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200/80'
             }`}
           >
             <span>🏐</span>
-            <span>Jogos</span>
+            <span>Aproveitamento</span>
           </button>
         </div>
       </div>
@@ -135,10 +136,7 @@ export const RankingTab: React.FC<RankingTabProps> = ({ players: currentPlayers,
       {/* Players Ranking List */}
       <div className="space-y-2.5">
         {sortedPlayers.map((player, idx) => {
-          const winRate =
-            player.matchesPlayed > 0
-              ? Math.round((player.wins / player.matchesPlayed) * 100)
-              : 0;
+          const winRate = Math.round(getWinRate(player) * 100);
 
           const points = getPoints(player);
           const mvpCount = player.mvpCount || 0;

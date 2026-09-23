@@ -20,7 +20,7 @@ export function LoginPage({ onLogin }: { onLogin: (session: UserSession) => void
   }
   const field = 'w-full rounded-2xl border border-slate-600 bg-slate-800 p-3 text-white';
   return <div className="flex-1 bg-slate-900 text-white px-6 py-12">
-    <img src={logoCulto} alt="Logo Culto de Segunda" className="w-200 mx-auto mb-5 object-contain" />
+    <img src={logoCulto} alt="Logo Culto de Segunda" className="w-150 mx-auto mb-5 object-contain" />
     <h1 className="text-2xl font-black text-center">Culto de Segunda</h1>
     <p className="text-slate-300 text-center mt-2 mb-8">que também acontece as quartas....</p>
     <form onSubmit={submit} className="space-y-5">

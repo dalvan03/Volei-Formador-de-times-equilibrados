@@ -48,111 +48,93 @@ export function generateBalancedTeams(
   });
 
   const countTeamA = Math.ceil(playersToBalance.length / 2);
+  const rating = (player: Player) => player.rating ?? 3.0;
+  const average = (team: Player[]) => team.reduce((sum, player) => sum + rating(player), 0) / team.length;
 
-  // We perform candidate simulations to find the best combination
-  let bestCombination: {
+  type Candidate = {
     teamAPlayers: Player[];
     teamBPlayers: Player[];
-    score: number;
     ratingA: number;
     ratingB: number;
-  } | null = null;
-
-  const iterations = Math.min(1000, Math.pow(2, playersToBalance.length));
-
-  for (let i = 0; i < iterations; i++) {
-    // Shuffle copy of players
-    const shuffled = [...playersToBalance].sort(() => Math.random() - 0.5);
-    const teamAPlayers = shuffled.slice(0, countTeamA);
-    const teamBPlayers = shuffled.slice(countTeamA);
-
-    // 1. Skill rating sum
-    const sumA = teamAPlayers.reduce((acc, p) => acc + (p.rating ?? 3.0), 0);
-    const sumB = teamBPlayers.reduce((acc, p) => acc + (p.rating ?? 3.0), 0);
-    const ratingA = teamAPlayers.length ? sumA / teamAPlayers.length : 0;
-    const ratingB = teamBPlayers.length ? sumB / teamBPlayers.length : 0;
-    const skillDiff = Math.abs(sumA - sumB);
-
-    // 2. Positional balance penalty
-    const posA: Record<string, number> = {};
-    const posB: Record<string, number> = {};
-    teamAPlayers.forEach((p) => {
-      if (p.position) posA[p.position] = (posA[p.position] || 0) + 1;
-    });
-    teamBPlayers.forEach((p) => {
-      if (p.position) posB[p.position] = (posB[p.position] || 0) + 1;
-    });
-
-    let posPenalty = 0;
-    // Prefer both teams to have at least 1 setter if present
-    if ((posA['Levantador'] || 0) > 0 && (posB['Levantador'] || 0) === 0 && playersToBalance.filter(p => p.position === 'Levantador').length >= 2) {
-      posPenalty += 4;
-    }
-
-    // 3. Variety penalty (repeat teammates)
-    let varietyPenalty = 0;
-    for (let x = 0; x < teamAPlayers.length; x++) {
-      for (let y = x + 1; y < teamAPlayers.length; y++) {
-        const key = [teamAPlayers[x].id, teamAPlayers[y].id].sort().join('_');
-        varietyPenalty += (coOccurrenceMap.get(key) || 0) * 1.5;
+    skillDiff: number;
+    sexDiff: number;
+    otherPenalty: number;
+  };
+  let bestCombination: Candidate | null = null;
+  const compareCandidates = (a: Candidate, b: Candidate) => {
+    const aClose = a.skillDiff <= 0.1 + 1e-9;
+    const bClose = b.skillDiff <= 0.1 + 1e-9;
+    if (aClose !== bClose) return aClose ? -1 : 1;
+    // Once the rating averages are close enough, balance M/F before fine-tuning the rating.
+    if (aClose && a.sexDiff !== b.sexDiff) return a.sexDiff - b.sexDiff;
+    if (Math.abs(a.skillDiff - b.skillDiff) > 1e-9) return a.skillDiff - b.skillDiff;
+    if (a.sexDiff !== b.sexDiff) return a.sexDiff - b.sexDiff;
+    return a.otherPenalty - b.otherPenalty;
+  };
+  const evaluate = (first: Player[], second: Player[]) => {
+    const teamAPlayers = [...first];
+    const teamBPlayers = [...second];
+    const ratingA = average(teamAPlayers);
+    const ratingB = average(teamBPlayers);
+    const countSex = (team: Player[], sex: 'M' | 'F') => team.filter(player => player.sex === sex).length;
+    const sexDiff = Math.abs(countSex(teamAPlayers, 'M') - countSex(teamBPlayers, 'M'))
+      + Math.abs(countSex(teamAPlayers, 'F') - countSex(teamBPlayers, 'F'));
+    const settersA = teamAPlayers.filter(player => player.position === 'Levantador').length;
+    const settersB = teamBPlayers.filter(player => player.position === 'Levantador').length;
+    const setterPenalty = playersToBalance.filter(player => player.position === 'Levantador').length >= 2
+      && (!settersA || !settersB) ? 4 : 0;
+    const repeats = (team: Player[]) => {
+      let total = 0;
+      for (let i = 0; i < team.length; i++) {
+        for (let j = i + 1; j < team.length; j++) {
+          total += coOccurrenceMap.get([team[i].id, team[j].id].sort().join('_')) || 0;
+        }
       }
-    }
-    for (let x = 0; x < teamBPlayers.length; x++) {
-      for (let y = x + 1; y < teamBPlayers.length; y++) {
-        const key = [teamBPlayers[x].id, teamBPlayers[y].id].sort().join('_');
-        varietyPenalty += (coOccurrenceMap.get(key) || 0) * 1.5;
-      }
-    }
-
-    // Combined score (lower is better)
-    const combinedScore = skillDiff * 12 + posPenalty * 6 + varietyPenalty * 1.5;
-
-    if (!bestCombination || combinedScore < bestCombination.score) {
-      bestCombination = {
-        teamAPlayers,
-        teamBPlayers,
-        score: combinedScore,
-        ratingA,
-        ratingB,
-      };
-    }
-  }
-
-  if (!bestCombination) {
-    const half = Math.ceil(playersToBalance.length / 2);
-    bestCombination = {
-      teamAPlayers: playersToBalance.slice(0, half),
-      teamBPlayers: playersToBalance.slice(half),
-      score: 0,
-      ratingA: 4.0,
-      ratingB: 4.0,
+      return total;
     };
-  }
-
-  const finalTeamAPlayers = [...bestCombination.teamAPlayers];
-  const finalTeamBPlayers = [...bestCombination.teamBPlayers];
-
-  // If there was an odd player (weakestPlayer), assign him/her to the weaker team
-  if (weakestPlayer) {
-    const sumA = finalTeamAPlayers.reduce((acc, p) => acc + (p.rating ?? 3.0), 0);
-    const sumB = finalTeamBPlayers.reduce((acc, p) => acc + (p.rating ?? 3.0), 0);
-
-    if (sumA < sumB) {
-      finalTeamAPlayers.push(weakestPlayer);
-    } else if (sumB < sumA) {
-      finalTeamBPlayers.push(weakestPlayer);
+    const candidate: Candidate = {
+      teamAPlayers, teamBPlayers, ratingA, ratingB,
+      skillDiff: Math.abs(ratingA - ratingB), sexDiff,
+      otherPenalty: setterPenalty * 6 + (repeats(teamAPlayers) + repeats(teamBPlayers)) * 1.5,
+    };
+    if (!bestCombination || compareCandidates(candidate, bestCombination) < 0) bestCombination = candidate;
+  };
+  const consider = (first: Player[], second: Player[]) => {
+    if (weakestPlayer) {
+      evaluate([...first, weakestPlayer], second);
+      evaluate(first, [...second, weakestPlayer]);
     } else {
-      // Equal score -> place in team with fewer total accumulated matches played
-      const matchesA = finalTeamAPlayers.reduce((acc, p) => acc + (p.matchesPlayed || 0), 0);
-      const matchesB = finalTeamBPlayers.reduce((acc, p) => acc + (p.matchesPlayed || 0), 0);
+      evaluate(first, second);
+    }
+  };
 
-      if (matchesA <= matchesB) {
-        finalTeamAPlayers.push(weakestPlayer);
-      } else {
-        finalTeamBPlayers.push(weakestPlayer);
+  // Exhaustive for normal roster sizes; random sampling keeps large rosters responsive.
+  if (playersToBalance.length <= 18) {
+    const choose = (start: number, selected: Player[]) => {
+      if (selected.length === countTeamA) {
+        const selectedIds = new Set(selected.map(player => player.id));
+        consider(selected, playersToBalance.filter(player => !selectedIds.has(player.id)));
+        return;
       }
+      for (let i = start; i <= playersToBalance.length - (countTeamA - selected.length); i++) {
+        choose(i + 1, [...selected, playersToBalance[i]]);
+      }
+    };
+    choose(0, []);
+  } else {
+    for (let i = 0; i < 2000; i++) {
+      const shuffled = [...playersToBalance];
+      for (let j = shuffled.length - 1; j > 0; j--) {
+        const k = Math.floor(Math.random() * (j + 1));
+        [shuffled[j], shuffled[k]] = [shuffled[k], shuffled[j]];
+      }
+      consider(shuffled.slice(0, countTeamA), shuffled.slice(countTeamA));
     }
   }
+
+  if (!bestCombination) throw new Error('Não foi possível formar os times.');
+  const finalTeamAPlayers = bestCombination.teamAPlayers;
+  const finalTeamBPlayers = bestCombination.teamBPlayers;
 
   const randomPlayerA = finalTeamAPlayers.length
     ? finalTeamAPlayers[Math.floor(Math.random() * finalTeamAPlayers.length)]
@@ -187,7 +169,7 @@ export function generateBalancedTeams(
     playerIds: finalTeamBPlayers.map((p) => p.id),
   };
 
-  const scoreDiff = Math.abs(bestCombination.ratingA - bestCombination.ratingB);
+  const scoreDiff = bestCombination.skillDiff;
 
   return {
     teamA,
