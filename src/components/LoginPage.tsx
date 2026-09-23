@@ -20,9 +20,9 @@ export function LoginPage({ onLogin }: { onLogin: (session: UserSession) => void
   }
   const field = 'w-full rounded-2xl border border-slate-600 bg-slate-800 p-3 text-white';
   return <div className="flex-1 bg-slate-900 text-white px-6 py-12">
-    <img src={logoCulto} alt="Logo Culto de Segunda" className="w-20 h-20 mx-auto mb-5 object-contain" />
+    <img src={logoCulto} alt="Logo Culto de Segunda" className="w-200 mx-auto mb-5 object-contain" />
     <h1 className="text-2xl font-black text-center">Culto de Segunda</h1>
-    <p className="text-slate-300 text-center mt-2 mb-8">Seu vôlei, suas conquistas.</p>
+    <p className="text-slate-300 text-center mt-2 mb-8">que também acontece as quartas....</p>
     <form onSubmit={submit} className="space-y-5">
       <label className="block">Celular com DDD (11 dígitos)<input className={field} type="tel" autoComplete="tel" inputMode="tel" placeholder="(51) 99988-7766" value={formatPhone(phone)} disabled={!!step} onChange={e => { setPhone(e.target.value.replace(/\D/g, '').slice(0, 11)); setError(''); }} required /></label>
       {step && <>
